@@ -35,3 +35,12 @@ server/yarn-error.log
 memory/
 test_reports/
 test_result.md
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
