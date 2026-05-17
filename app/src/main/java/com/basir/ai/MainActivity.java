@@ -500,7 +500,10 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         addPlainText(t("وضع الخصوصية: ", "Privacy mode: ")
                 + (privacyMode ? t("مفعل", "on") : t("معطل", "off")));
         addPlainText("Gemini: " + (AiClient.isConfigured(prefs)
-                ? t("متصل", "connected") : t("يحتاج إعداد", "needs setup")));
+                ? t("متصل", "connected") : t("يحتاج إعداد", "needs setup"))
+                + " · " + (AiClient.MODE_DIRECT.equals(AiClient.getMode(prefs))
+                        ? t("اتصال مباشر", "direct")
+                        : t("خادم وسيط", "proxy")));
         addPlainText(t("النطق الصوتي: ", "Speech output: ")
                 + (speechEnabled ? t("يعمل", "on") : t("متوقف", "off")));
         addPlainText(t("الاهتزاز: ", "Vibration: ")
@@ -755,13 +758,11 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         addPlainText(t("جاري رفع الملف...", "Uploading file..."));
         speak(t("جاري التحويل.", "Converting now."));
 
-        final String baseUrl = prefs.getString("ai_server_url", "");
-        final String appToken = prefs.getString("ai_app_token", "");
         aiExecutor.execute(() -> {
             try {
                 File out = new File(getExternalFilesDir(null),
                         "basir-" + System.currentTimeMillis() + ".docx");
-                AiClient.convertToDocx(MainActivity.this, baseUrl, appToken, uri,
+                AiClient.convertToDocx(MainActivity.this, prefs, uri,
                         "full", lang, out);
                 log("convert", out.getName());
                 runOnUiThread(() -> showConvertResult(out));
@@ -1115,40 +1116,128 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     private void showAiSettingsDialog() {
+        ScrollView scroll = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(12), dp(8), dp(12), dp(8));
+        scroll.addView(box);
 
         TextView info = new TextView(this);
         info.setText(t(
-                "أدخل رابط مزود الذكاء الاصطناعي (الخادم الآمن). لا يتم حفظ مفتاح Gemini داخل التطبيق - يبقى في الخادم فقط.",
-                "Enter the AI provider URL (secure proxy). The Gemini key is never stored inside the app - it stays only on the server."));
+                "اختر طريقة الاتصال بـ Gemini. الوضع المباشر يعمل بمفتاح API من Google AI Studio دون أي خادم وسيط.",
+                "Choose how to connect to Gemini. Direct mode works with a Google AI Studio key, no proxy required."));
         info.setTextSize(textSize(14));
         info.setTextColor(colorTextSec());
         box.addView(info, fullWidth());
 
+        // ----- Mode selector -----
+        final TextView modeLabel = new TextView(this);
+        modeLabel.setText(t("وضع الاتصال", "Connection mode"));
+        modeLabel.setTextColor(colorText());
+        modeLabel.setTextSize(textSize(15));
+        modeLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams ml = fullWidth(); ml.setMargins(0, dp(14), 0, dp(6));
+        box.addView(modeLabel, ml);
+
+        final boolean[] directMode = { AiClient.MODE_DIRECT.equals(AiClient.getMode(prefs)) };
+        final Switch modeSwitch = new Switch(this);
+        modeSwitch.setText(t("الاتصال المباشر بـ Gemini (بدون خادم)",
+                              "Direct Gemini connection (no server)"));
+        modeSwitch.setTextSize(textSize(14));
+        modeSwitch.setTextColor(colorText());
+        modeSwitch.setChecked(directMode[0]);
+        modeSwitch.setContentDescription(t(
+                "زر تبديل وضع الاتصال. مفعل يعني اتصال مباشر، غير مفعل يعني عبر خادم وسيط.",
+                "Connection-mode toggle. On = direct, off = secure proxy."));
+        box.addView(modeSwitch, fullWidth());
+
+        // ----- Direct mode fields -----
+        final LinearLayout directGroup = new LinearLayout(this);
+        directGroup.setOrientation(LinearLayout.VERTICAL);
+
+        TextView directHelp = new TextView(this);
+        directHelp.setText(t(
+                "احصل على مفتاح مجاني من Google AI Studio: aistudio.google.com",
+                "Get a free key from Google AI Studio: aistudio.google.com"));
+        directHelp.setTextSize(textSize(13));
+        directHelp.setTextColor(colorTextSec());
+        LinearLayout.LayoutParams dh = fullWidth(); dh.setMargins(0, dp(10), 0, 0);
+        directGroup.addView(directHelp, dh);
+
+        final EditText geminiKey = makeInput(t("مفتاح Gemini API", "Gemini API key"), false);
+        geminiKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        geminiKey.setText(prefs.getString("gemini_api_key", ""));
+        LinearLayout.LayoutParams gk = fullWidth(); gk.setMargins(0, dp(8), 0, 0);
+        directGroup.addView(geminiKey, gk);
+
+        final EditText modelFast = makeInput(t("نموذج سريع (اختياري)", "Fast model (optional)"), false);
+        modelFast.setText(prefs.getString("gemini_model_fast", GeminiDirectClient.DEFAULT_FLASH));
+        LinearLayout.LayoutParams mf = fullWidth(); mf.setMargins(0, dp(8), 0, 0);
+        directGroup.addView(modelFast, mf);
+
+        final EditText modelPro = makeInput(t("نموذج متقدم (اختياري)", "Pro model (optional)"), false);
+        modelPro.setText(prefs.getString("gemini_model_pro", GeminiDirectClient.DEFAULT_PRO));
+        LinearLayout.LayoutParams mp = fullWidth(); mp.setMargins(0, dp(8), 0, 0);
+        directGroup.addView(modelPro, mp);
+
+        box.addView(directGroup, fullWidth());
+
+        // ----- Proxy mode fields -----
+        final LinearLayout proxyGroup = new LinearLayout(this);
+        proxyGroup.setOrientation(LinearLayout.VERTICAL);
+
+        TextView proxyHelp = new TextView(this);
+        proxyHelp.setText(t(
+                "أدخل رابط الخادم الوسيط الذي يحفظ مفتاح Gemini.",
+                "Enter the proxy server URL that holds your Gemini key."));
+        proxyHelp.setTextSize(textSize(13));
+        proxyHelp.setTextColor(colorTextSec());
+        LinearLayout.LayoutParams ph = fullWidth(); ph.setMargins(0, dp(10), 0, 0);
+        proxyGroup.addView(proxyHelp, ph);
+
         final EditText url = makeInput("https://your-server/api/basir", false);
         url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(prefs.getString("ai_server_url", ""));
-        LinearLayout.LayoutParams up = fullWidth(); up.setMargins(0, dp(10), 0, 0);
-        box.addView(url, up);
+        LinearLayout.LayoutParams up = fullWidth(); up.setMargins(0, dp(8), 0, 0);
+        proxyGroup.addView(url, up);
 
         final EditText token = makeInput(t("رمز التطبيق (اختياري)", "App token (optional)"), false);
         token.setText(prefs.getString("ai_app_token", ""));
         LinearLayout.LayoutParams tp = fullWidth(); tp.setMargins(0, dp(8), 0, 0);
-        box.addView(token, tp);
+        proxyGroup.addView(token, tp);
+
+        box.addView(proxyGroup, fullWidth());
+
+        directGroup.setVisibility(directMode[0] ? View.VISIBLE : View.GONE);
+        proxyGroup.setVisibility(directMode[0] ? View.GONE : View.VISIBLE);
+
+        modeSwitch.setOnCheckedChangeListener((btn, isChecked) -> {
+            directMode[0] = isChecked;
+            directGroup.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+            proxyGroup.setVisibility(isChecked ? View.GONE : View.VISIBLE);
+            speak(isChecked
+                    ? t("الاتصال المباشر بـ Gemini.", "Direct Gemini connection.")
+                    : t("الاتصال عبر خادم وسيط.", "Connection via secure proxy."));
+        });
 
         new AlertDialog.Builder(this)
                 .setTitle(t("إعداد Gemini", "Gemini setup"))
-                .setView(box)
+                .setView(scroll)
                 .setPositiveButton(t("حفظ", "Save"), (d, w) -> {
-                    prefs.edit()
-                            .putString("ai_server_url", url.getText().toString().trim())
-                            .putString("ai_app_token", token.getText().toString().trim())
-                            .apply();
+                    SharedPreferences.Editor e = prefs.edit();
+                    e.putString("ai_mode", directMode[0] ? AiClient.MODE_DIRECT : AiClient.MODE_PROXY);
+                    if (directMode[0]) {
+                        e.putString("gemini_api_key", geminiKey.getText().toString().trim());
+                        e.putString("gemini_model_fast", modelFast.getText().toString().trim());
+                        e.putString("gemini_model_pro",  modelPro.getText().toString().trim());
+                    } else {
+                        e.putString("ai_server_url", url.getText().toString().trim());
+                        e.putString("ai_app_token", token.getText().toString().trim());
+                    }
+                    e.apply();
                     speak(AiClient.isConfigured(prefs)
                             ? t("تم الحفظ.", "Saved.")
-                            : t("الرابط غير مكتمل.", "URL is incomplete."));
+                            : t("الإعداد غير مكتمل.", "Configuration is incomplete."));
                     showSettingsScreen();
                 })
                 .setNegativeButton(t("إلغاء", "Cancel"), null)
@@ -1243,14 +1332,12 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         addPlainText(t("قد يستغرق ذلك بضع ثوانٍ.", "This may take a few seconds."));
         speak(t("جاري التحليل.", "Analyzing now."));
 
-        final String url = prefs.getString("ai_server_url", "");
-        final String token = prefs.getString("ai_app_token", "");
         aiExecutor.execute(() -> {
             try {
                 String mime = AiClient.detectMime(MainActivity.this, uri);
                 byte[] bytes = AiClient.readUriBytes(MainActivity.this, uri, 6 * 1024 * 1024);
                 String b64 = AiClient.encodeBase64(bytes);
-                String answer = AiClient.ask(url, token, pendingTask, pendingPrompt,
+                String answer = AiClient.ask(prefs, pendingTask, pendingPrompt,
                         pendingInstruction, lang, b64, mime);
                 log(pendingTask, answer);
                 runOnUiThread(() -> showResult(pendingTitle, answer, true));
@@ -1272,11 +1359,9 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         if (!AiClient.isConfigured(prefs)) { showAiSettingsDialog(); return; }
         resetScreen(title, t("جاري الاتصال بـ Gemini...", "Connecting to Gemini..."));
         speak(t("جاري المعالجة.", "Processing now."));
-        final String url = prefs.getString("ai_server_url", "");
-        final String token = prefs.getString("ai_app_token", "");
         aiExecutor.execute(() -> {
             try {
-                String answer = AiClient.ask(url, token, task, input, instruction, lang);
+                String answer = AiClient.ask(prefs, task, input, instruction, lang);
                 log(task, input + "\n→ " + answer);
                 runOnUiThread(() -> showResult(title, answer, true));
             } catch (Exception e) {
