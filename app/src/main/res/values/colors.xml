@@ -1,0 +1,14 @@
+<resources>
+    <color name="basir_primary">#0D47A1</color>
+    <color name="basir_primary_dark">#002171</color>
+    <color name="basir_accent">#1976D2</color>
+    <color name="basir_bg">#F5F7FA</color>
+    <color name="basir_surface">#FFFFFF</color>
+    <color name="basir_text">#0F172A</color>
+    <color name="basir_text_secondary">#475569</color>
+    <color name="basir_divider">#E2E8F0</color>
+    <color name="basir_danger">#C62828</color>
+    <color name="basir_success">#2E7D32</color>
+    <color name="basir_warning">#EF6C00</color>
+    <color name="basir_card_stroke">#E5E7EB</color>
+</resources>

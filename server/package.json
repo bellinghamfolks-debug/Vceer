@@ -1,0 +1,20 @@
+{
+  "name": "basir-proxy",
+  "version": "1.0.1",
+  "description": "Secure Gemini proxy for the Basir Android app (text, images, and PDF/PPTX -> Word).",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "docx": "^8.5.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

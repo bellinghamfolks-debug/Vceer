@@ -1,0 +1,13 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/basir_bg</item>
+        <item name="android:colorBackground">@color/basir_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/basir_bg</item>
+        <item name="android:navigationBarColor">@color/basir_bg</item>
+        <item name="android:colorPrimary">@color/basir_primary</item>
+        <item name="android:colorAccent">@color/basir_accent</item>
+        <item name="android:textColorPrimary">@color/basir_text</item>
+        <item name="android:textColorSecondary">@color/basir_text_secondary</item>
+    </style>
+</resources>

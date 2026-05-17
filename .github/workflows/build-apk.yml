@@ -1,0 +1,79 @@
+name: Build Basir AI APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Preflight project structure
+        run: |
+          set -e
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/basir/ai/MainActivity.java
+          test -f app/src/main/java/com/basir/ai/AiClient.java
+          test -f app/src/main/java/com/basir/ai/BasirDb.java
+          test -f app/src/main/java/com/basir/ai/GeminiDirectClient.java
+          test -f app/src/main/java/com/basir/ai/DocxBuilder.java
+          test -f app/src/main/java/com/basir/ai/PptxExtractor.java
+          test -f app/src/main/res/values/strings.xml
+          test -f app/src/main/res/values/styles.xml
+          test -f app/src/main/res/drawable/ic_basir.xml
+          echo "Preflight OK"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 platform-tools'
+
+      - name: Set up Gradle 8.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+
+      - name: Regenerate Gradle wrapper (in case wrapper jar is missing)
+        run: |
+          # Some hosts strip binary jars from auto-commits.
+          # Regenerate a fresh wrapper for Gradle 8.5 so ./gradlew works.
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
+          chmod +x ./gradlew
+          ls -la gradle/wrapper/
+          ./gradlew --version
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: List build outputs
+        if: always()
+        run: |
+          echo "=== APK outputs ==="
+          find app/build/outputs -type f -name "*.apk" 2>/dev/null || echo "no apk yet"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BasirAI-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
