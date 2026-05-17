@@ -3,17 +3,18 @@ package com.basir.ai;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.speech.RecognizerIntent;
@@ -22,14 +23,19 @@ import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -37,50 +43,43 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Basir AI - main screen of the assistant.
- *
- * Uses only Android framework APIs (no AndroidX) to keep the build simple
- * and bullet-proof on GitHub Actions CI.
+ * Basir 1.0.1 - main screen.
+ * Card-based, screen-reader-first UI. Gemini 3 powered (via the secure proxy).
  */
 public class MainActivity extends Activity implements TextToSpeech.OnInitListener {
 
-    public static final String APP_VERSION = "1.0.0";
+    public static final String APP_VERSION = "1.0.1";
     public static final String CONTACT_EMAIL = "ubdallahalrashdee@gmail.com";
 
     private static final int REQ_PERMISSIONS = 1001;
     private static final int REQ_VOICE = 1002;
     private static final int REQ_IMAGE_PICK = 1003;
+    private static final int REQ_DOC_PICK = 1004;
 
-    // ----- Persistence -----
     private SharedPreferences prefs;
     private BasirDb db;
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
 
-    // ----- Speech -----
     private TextToSpeech tts;
     private boolean ttsReady = false;
 
-    // ----- Settings (cached from prefs) -----
+    // Settings cache
     private String lang = "ar";
     private boolean privacyMode = true;
     private boolean speechEnabled = true;
     private boolean vibrationEnabled = true;
     private boolean autoSaveResults = false;
     private float ttsRate = 0.95f;
-    private int fontStep = 0; // 0 normal, 1 large, 2 xlarge
+    private int fontStep = 0;
 
-    // ----- UI -----
     private LinearLayout root;
 
-    // ----- Pending image analysis params -----
-    private String pendingTask = "image_analysis";
-    private String pendingTitle = "";
-    private String pendingInstruction = "";
-    private String pendingPrompt = "";
+    // Pending image
+    private String pendingTask, pendingTitle, pendingInstruction, pendingPrompt;
 
-    // ===================================================================
-    // Activity lifecycle
-    // ===================================================================
+    // ============================================================
+    // Lifecycle
+    // ============================================================
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -98,16 +97,13 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         if (status != TextToSpeech.SUCCESS) return;
         ttsReady = true;
         applyTtsConfig();
-        speak(t("مرحبًا بك في بصير AI. مساعدك الذكي للحياة اليومية.",
-                "Welcome to Basir AI. Your smart life companion."));
+        speak(t("مرحبًا بك في بصير. مساعدك للقراءة والوصف والترجمة.",
+                "Welcome to Basir. Your reading, description and translation assistant."));
     }
 
     @Override
     protected void onDestroy() {
-        if (tts != null) {
-            tts.stop();
-            tts.shutdown();
-        }
+        if (tts != null) { tts.stop(); tts.shutdown(); }
         aiExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -125,18 +121,13 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     private void applyTtsConfig() {
         if (tts == null || !ttsReady) return;
         Locale locale = isEnglish() ? Locale.US : new Locale("ar", "SA");
-        int r = tts.setLanguage(locale);
-        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
-            toast(t("لغة النطق غير مدعومة بالكامل على هذا الجهاز.",
-                    "TTS language is not fully supported on this device."));
-        }
+        tts.setLanguage(locale);
         tts.setSpeechRate(ttsRate);
     }
 
     private void requestCorePermissions() {
         if (Build.VERSION.SDK_INT < 23) return;
         List<String> need = new ArrayList<>();
-        addIfMissing(need, Manifest.permission.CAMERA);
         addIfMissing(need, Manifest.permission.RECORD_AUDIO);
         addIfMissing(need, Manifest.permission.ACCESS_FINE_LOCATION);
         addIfMissing(need, Manifest.permission.ACCESS_COARSE_LOCATION);
@@ -144,25 +135,46 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     private void addIfMissing(List<String> list, String perm) {
-        if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) list.add(perm);
+        if (checkSelfPermission(perm) != android.content.pm.PackageManager.PERMISSION_GRANTED) list.add(perm);
     }
 
-    // ===================================================================
-    // Localization helper
-    // ===================================================================
-
+    // ============================================================
+    // Localization
+    // ============================================================
     private boolean isEnglish() { return "en".equals(lang); }
     private String t(String ar, String en) { return isEnglish() ? en : ar; }
 
-    // ===================================================================
-    // UI primitives
-    // ===================================================================
+    // ============================================================
+    // Theme colors (resolve via current night/day resources)
+    // ============================================================
+    private int colorBg()        { return getColor(R.color.basir_bg); }
+    private int colorSurface()   { return getColor(R.color.basir_surface); }
+    private int colorText()      { return getColor(R.color.basir_text); }
+    private int colorTextSec()   { return getColor(R.color.basir_text_secondary); }
+    private int colorPrimary()   { return getColor(R.color.basir_primary); }
+    private int colorAccent()    { return getColor(R.color.basir_accent); }
+    private int colorDanger()    { return getColor(R.color.basir_danger); }
+    private int colorSuccess()   { return getColor(R.color.basir_success); }
+    private int colorWarning()   { return getColor(R.color.basir_warning); }
+    private int colorStroke()    { return getColor(R.color.basir_card_stroke); }
 
-    private void resetScreen(String title, String intro) {
+    private boolean isNightMode() {
+        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return mode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    // ============================================================
+    // UI primitives
+    // ============================================================
+
+    private void resetScreen(String title, String subtitle) {
         ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(colorBg());
+        scroll.setFillViewport(true);
+
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(18), dp(18), dp(28));
+        root.setPadding(dp(20), dp(20), dp(20), dp(32));
         scroll.addView(root);
         setContentView(scroll);
 
@@ -170,84 +182,210 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         heading.setText(title);
         heading.setTextSize(textSize(28));
         heading.setTypeface(null, Typeface.BOLD);
-        heading.setGravity(Gravity.CENTER);
-        heading.setTextColor(Color.parseColor("#0D47A1"));
-        heading.setPadding(0, 0, 0, dp(8));
-        heading.setContentDescription((isEnglish() ? "Title: " : "العنوان: ") + title);
+        heading.setTextColor(colorText());
+        heading.setPadding(0, dp(4), 0, dp(6));
+        heading.setContentDescription(title);
+        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         root.addView(heading, fullWidth());
 
-        TextView status = new TextView(this);
-        status.setText(buildStatusText());
-        status.setTextSize(textSize(15));
-        status.setTextColor(Color.parseColor("#37474F"));
-        status.setPadding(0, 0, 0, dp(12));
-        root.addView(status, fullWidth());
-
-        if (intro != null && !intro.trim().isEmpty()) {
-            addParagraph(intro);
-            speak(intro);
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitle);
+            sub.setTextSize(textSize(16));
+            sub.setTextColor(colorTextSec());
+            sub.setPadding(0, 0, 0, dp(16));
+            sub.setLineSpacing(dp(2), 1.1f);
+            root.addView(sub, fullWidth());
         }
     }
 
-    private String buildStatusText() {
-        String langTxt = isEnglish() ? "English" : "العربية";
-        String privacyTxt = privacyMode
-                ? t("الخصوصية: مفعّلة", "Privacy: on")
-                : t("الخصوصية: غير مفعّلة", "Privacy: off");
-        String aiTxt = AiClient.isConfigured(prefs)
-                ? t("الذكاء: مهيأ", "AI: configured")
-                : t("الذكاء: غير مهيأ", "AI: not configured");
-        String talkbackTxt = isTalkBackOn()
-                ? t("قارئ الشاشة: مفعّل", "Screen reader: on")
-                : t("قارئ الشاشة: غير مكتشف", "Screen reader: off");
-        return t("اللغة: ", "Language: ") + langTxt + " • " + privacyTxt +
-                " • " + aiTxt + " • " + talkbackTxt;
-    }
-
-    private boolean isTalkBackOn() {
-        AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
-        return am != null && am.isEnabled() && am.isTouchExplorationEnabled();
-    }
-
-    private void addParagraph(String text) {
-        if (text == null || text.isEmpty()) return;
+    /** Section header within a screen (no big title). */
+    private void addSection(String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
-        tv.setTextSize(textSize(18));
-        tv.setTextColor(Color.parseColor("#212121"));
-        tv.setPadding(0, dp(6), 0, dp(6));
-        tv.setContentDescription(text);
-        root.addView(tv, fullWidth());
+        tv.setTextSize(textSize(15));
+        tv.setTypeface(null, Typeface.BOLD);
+        tv.setTextColor(colorTextSec());
+        tv.setAllCaps(false);
+        tv.setLetterSpacing(0.02f);
+        LinearLayout.LayoutParams p = fullWidth();
+        p.setMargins(0, dp(20), 0, dp(8));
+        if (Build.VERSION.SDK_INT >= 28) tv.setAccessibilityHeading(true);
+        root.addView(tv, p);
     }
 
-    private void addButton(String text, String cd, View.OnClickListener listener) {
+    /** Large primary action card: title + description, full width, rounded. */
+    private void addCard(String title, String description, View.OnClickListener listener) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        card.setClickable(true);
+        card.setFocusable(true);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(colorSurface());
+        bg.setCornerRadius(dp(16));
+        bg.setStroke(dp(1), colorStroke());
+        card.setBackground(bg);
+
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(textSize(20));
+        t.setTypeface(null, Typeface.BOLD);
+        t.setTextColor(colorText());
+        card.addView(t, fullWidth());
+
+        if (description != null && !description.isEmpty()) {
+            TextView d = new TextView(this);
+            d.setText(description);
+            d.setTextSize(textSize(15));
+            d.setTextColor(colorTextSec());
+            d.setLineSpacing(dp(2), 1.1f);
+            LinearLayout.LayoutParams dp_ = fullWidth();
+            dp_.setMargins(0, dp(6), 0, 0);
+            card.addView(d, dp_);
+        }
+
+        card.setContentDescription(title + ". " + (description == null ? "" : description));
+        card.setOnClickListener(listener);
+
+        LinearLayout.LayoutParams p = fullWidth();
+        p.setMargins(0, dp(8), 0, dp(8));
+        root.addView(card, p);
+    }
+
+    /** Secondary outline button. */
+    private void addOutlineButton(String text, View.OnClickListener listener) {
         Button b = new Button(this);
         b.setText(text);
-        b.setTextSize(textSize(18));
         b.setAllCaps(false);
-        b.setPadding(dp(10), dp(14), dp(10), dp(14));
-        b.setContentDescription(cd == null ? text : cd);
+        b.setTextSize(textSize(16));
+        b.setTextColor(colorPrimary());
+        b.setMinHeight(dp(56));
+        b.setPadding(dp(16), dp(12), dp(16), dp(12));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(colorSurface());
+        bg.setCornerRadius(dp(28));
+        bg.setStroke(dp(1), colorStroke());
+        b.setBackground(bg);
         b.setOnClickListener(listener);
+        b.setContentDescription(text);
         LinearLayout.LayoutParams p = fullWidth();
         p.setMargins(0, dp(6), 0, dp(6));
         root.addView(b, p);
     }
 
+    /** Filled primary button (call to action). */
+    private void addPrimaryButton(String text, View.OnClickListener listener) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(textSize(17));
+        b.setTextColor(Color.WHITE);
+        b.setTypeface(null, Typeface.BOLD);
+        b.setMinHeight(dp(56));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(colorPrimary());
+        bg.setCornerRadius(dp(28));
+        b.setBackground(bg);
+        b.setOnClickListener(listener);
+        b.setContentDescription(text);
+        LinearLayout.LayoutParams p = fullWidth();
+        p.setMargins(0, dp(8), 0, dp(8));
+        root.addView(b, p);
+    }
+
+    /** Danger button (for destructive actions). */
+    private void addDangerButton(String text, View.OnClickListener listener) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(textSize(16));
+        b.setTextColor(colorDanger());
+        b.setMinHeight(dp(56));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(colorSurface());
+        bg.setCornerRadius(dp(28));
+        bg.setStroke(dp(1), colorDanger());
+        b.setBackground(bg);
+        b.setOnClickListener(listener);
+        b.setContentDescription(text);
+        LinearLayout.LayoutParams p = fullWidth();
+        p.setMargins(0, dp(6), 0, dp(6));
+        root.addView(b, p);
+    }
+
+    /** Settings row with a Switch widget. */
+    private void addSwitchRow(String label, boolean checked, OnToggle action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(10), dp(14), dp(10));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(colorSurface());
+        bg.setCornerRadius(dp(14));
+        bg.setStroke(dp(1), colorStroke());
+        row.setBackground(bg);
+
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextSize(textSize(16));
+        tv.setTextColor(colorText());
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        row.addView(tv, tp);
+
+        Switch sw = new Switch(this);
+        sw.setChecked(checked);
+        sw.setContentDescription(label);
+        sw.setOnCheckedChangeListener((b, isChecked) -> action.run(isChecked));
+        row.addView(sw);
+
+        // Make the whole row clickable to toggle
+        row.setOnClickListener(v -> sw.toggle());
+
+        LinearLayout.LayoutParams p = fullWidth();
+        p.setMargins(0, dp(6), 0, dp(6));
+        root.addView(row, p);
+    }
+
+    private interface OnToggle { void run(boolean checked); }
+
+    private void addPlainText(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(textSize(16));
+        tv.setTextColor(colorText());
+        tv.setPadding(0, dp(4), 0, dp(4));
+        tv.setLineSpacing(dp(2), 1.15f);
+        root.addView(tv, fullWidth());
+    }
+
     private void addBackButton() {
-        addButton(t("⬅ رجوع للرئيسية", "⬅ Back to home"),
-                t("زر الرجوع للصفحة الرئيسية.", "Back to home button."),
-                v -> showHome());
+        addOutlineButton(t("رجوع", "Back"), v -> showHome());
     }
 
     private EditText makeInput(String hint, boolean multiline) {
         EditText e = new EditText(this);
         e.setHint(hint);
         e.setContentDescription(hint);
+        e.setTextColor(colorText());
+        e.setHintTextColor(colorTextSec());
+        e.setPadding(dp(14), dp(12), dp(14), dp(12));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(colorSurface());
+        bg.setStroke(dp(1), colorStroke());
+        bg.setCornerRadius(dp(12));
+        e.setBackground(bg);
         if (multiline) {
             e.setMinLines(4);
             e.setInputType(InputType.TYPE_CLASS_TEXT |
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+            e.setGravity(Gravity.TOP | Gravity.START);
         } else {
             e.setSingleLine(true);
         }
@@ -273,327 +411,441 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         }
     }
 
-    // ===================================================================
-    // Home screen
-    // ===================================================================
+    // ============================================================
+    // Home: 5 primary cards + More
+    // ============================================================
 
     private void showHome() {
-        resetScreen(t("بصير AI", "Basir AI"),
-                t("مساعدك الذكي للقراءة والتنقل والترجمة والذكاء الاصطناعي.",
-                  "Your smart assistant for reading, navigation, translation and AI."));
+        resetScreen(t("بصير", "Basir"),
+                t("مساعدك الذكي للقراءة، الوصف، الترجمة، والمستندات.",
+                  "Your smart assistant for reading, description, translation and documents."));
 
-        addButton(t("📷 وصف المشهد", "📷 Describe scene"),
-                t("تحليل الصور والمشاهد بالذكاء الاصطناعي.",
-                  "AI-powered scene and image description."),
-                v -> showSceneScreen());
+        addCard(t("اسأل بصير", "Ask Basir"),
+                t("اسأل بالصوت أو الكتابة واحصل على إجابة واضحة.",
+                  "Ask by voice or text and get a clear answer."),
+                v -> showAskScreen());
 
-        addButton(t("📄 قراءة وتحليل المستندات", "📄 Read & analyze documents"),
-                t("قراءة نصوص، فواتير، عقود، تقارير، وملاحظات.",
-                  "Read texts, invoices, contracts, reports, notes."),
-                v -> showTextReaderScreen());
+        addCard(t("وصف صورة أو مشهد", "Describe an image or scene"),
+                t("صف الصور، لقطات الشاشة، والمشاهد المحيطة.",
+                  "Describe images, screenshots and surrounding scenes."),
+                v -> showDescribeScreen());
 
-        addButton(t("💬 اسأل بصير", "💬 Ask Basir"),
-                t("اطرح أي سؤال على الذكاء الاصطناعي.",
-                  "Ask the AI any question."),
-                v -> showAskDialog());
+        addCard(t("قراءة المستندات", "Read a document"),
+                t("قراءة PDF، الصور، الفواتير، العقود، والعروض التقديمية.",
+                  "Read PDF, images, invoices, contracts, presentations."),
+                v -> showDocumentScreen());
 
-        addButton(t("🧪 مختبر الذكاء", "🧪 AI Lab"),
-                t("أدوات متقدمة: وصف بديل، شرح لقطة، بطاقات مذاكرة.",
-                  "Advanced tools: alt text, screenshot, study cards."),
-                v -> showAiLabScreen());
+        addCard(t("ترجمة وشرح", "Translate & explain"),
+                t("ترجمة النصوص مع تبسيط المعنى وشرح النبرة.",
+                  "Translate texts and explain meaning and tone."),
+                v -> showTranslateScreen());
 
-        addButton(t("🌐 الترجمة الذكية", "🌐 Smart translate"),
-                t("ترجمة سياقية بين العربية والإنجليزية.",
-                  "Contextual AR/EN translation."),
-                v -> showTranslateDialog());
-
-        addButton(t("🚶 مساعد المشي", "🚶 Walking assistant"),
-                t("أوامر قصيرة واهتزازات للتوجيه.",
-                  "Short alerts and vibrations for guidance."),
-                v -> showWalkingScreen());
-
-        addButton(t("🆘 وضع الطوارئ", "🆘 Emergency mode"),
-                t("استغاثة سريعة مع مشاركة الموقع.",
-                  "Quick help with location sharing."),
+        addCard(t("الطوارئ والمساعدة", "Emergency & help"),
+                t("إرسال موقعك أو طلب مساعدة من جهة محفوظة.",
+                  "Share your location or request help from a saved contact."),
                 v -> showEmergencyScreen());
 
-        addButton(t("🧠 الذاكرة الشخصية", "🧠 Personal memory"),
-                t("الأشخاص، المنتجات، الأماكن المحفوظة.",
-                  "Saved people, products, places."),
+        addOutlineButton(t("المزيد من الأدوات", "More tools"), v -> showMoreScreen());
+
+        // Bottom: status pill
+        addOutlineButton(t("حالة التطبيق", "App status"), v -> showStatusScreen());
+    }
+
+    private void showMoreScreen() {
+        resetScreen(t("المزيد من الأدوات", "More tools"),
+                t("أدوات إضافية ومحفوظاتك.", "Additional tools and your saved data."));
+
+        addCard(t("أدوات متقدمة", "Advanced tools"),
+                t("وصف بديل، قراءة لقطة شاشة، بطاقات مذاكرة، صياغة رد، قراءة جدول.",
+                  "Alt text, screenshot reading, study cards, reply drafting, table reading."),
+                v -> showAdvancedScreen());
+
+        addCard(t("محفوظاتي الخاصة", "My saved items"),
+                t("الأشخاص، المنتجات، الأدوية، والأماكن.",
+                  "People, products, medicine, and places."),
                 v -> showMemoryScreen());
 
-        addButton(t("🗂 الأرشيف", "🗂 Archive"),
-                t("النتائج المحفوظة من تحليلات الذكاء الاصطناعي.",
-                  "Saved AI analysis results."),
+        addCard(t("المحفوظات", "Archive"),
+                t("نتائج تحليل محفوظة محليًا.", "Locally saved analysis results."),
                 v -> showArchiveScreen());
 
-        addButton(t("📋 سجل النشاط", "📋 Activity log"),
-                t("آخر العمليات المحفوظة محليًا.",
-                  "Recent locally saved activity."),
+        addCard(t("آخر العمليات", "Recent activity"),
+                t("سجل واضح بآخر ما قمت به في التطبيق.",
+                  "A clear log of your recent actions."),
                 v -> showHistoryScreen());
 
-        addButton(t("⚙️ الإعدادات", "⚙️ Settings"),
-                t("اللغة، الصوت، الخصوصية، الذكاء، الطوارئ.",
-                  "Language, voice, privacy, AI, emergency."),
+        addCard(t("الإعدادات", "Settings"),
+                t("اللغة، الصوت، المظهر، الخصوصية، Gemini، الطوارئ.",
+                  "Language, voice, theme, privacy, Gemini, emergency."),
                 v -> showSettingsScreen());
 
-        addButton(t("ℹ️ حول التطبيق والتواصل", "ℹ️ About & contact"),
-                t("معلومات التطبيق والتواصل مع المطور.",
-                  "App info and developer contact."),
+        addCard(t("حول التطبيق", "About"),
+                t("معلومات بصير والتواصل مع المطور.",
+                  "About Basir and developer contact."),
                 v -> showAboutScreen());
 
-        addButton(t("🎤 أمر صوتي", "🎤 Voice command"),
-                t("قل أمرًا مثل: اقرأ، طوارئ، إعدادات.",
-                  "Say a command like: read, emergency, settings."),
-                v -> startVoiceCommand());
+        addOutlineButton(t("أمر صوتي", "Voice command"), v -> startVoiceCommand());
+        addBackButton();
     }
 
-    // ===================================================================
-    // Scene
-    // ===================================================================
+    // ============================================================
+    // App status (separate screen instead of cluttering every page)
+    // ============================================================
 
-    private void showSceneScreen() {
-        log("scene_open", "scene screen");
-        resetScreen(t("وصف المشهد", "Scene description"),
-                t("اختر صورة من المعرض، أو اكتب وصفًا، أو افتح الكاميرا.",
-                  "Pick a gallery image, type a description, or open the camera."));
+    private void showStatusScreen() {
+        resetScreen(t("حالة التطبيق", "App status"),
+                t("ملخص الإعدادات الحالية.", "Summary of current settings."));
 
-        addButton(t("🖼 تحليل صورة من المعرض", "🖼 Analyze image from gallery"),
-                t("يرسل الصورة المختارة للوسيط الآمن.",
-                  "Sends the chosen image to the secure proxy."),
-                v -> pickImageForAi("scene_image",
-                        t("تحليل المشهد", "Scene analysis"),
-                        "Analyze this scene for a blind user. Begin with concise alt text, " +
-                        "then describe people without identification, obstacles, visible text, " +
-                        "directions, risk level, and safe next steps.",
-                        "Describe this scene for a blind user."));
-
-        addButton(t("✍️ وصف نصي للمشهد", "✍️ Type scene description"),
-                t("اكتب ما حولك ليحلله الذكاء الاصطناعي.",
-                  "Type what's around you for AI analysis."),
-                v -> showTextAiDialog("scene_text",
-                        t("تحليل المشهد", "Scene analysis"),
-                        "Turn the written scene into practical guidance for a blind user. " +
-                        "Quick summary, obstacles, directions, risk level, next step."));
+        addPlainText(t("اللغة: ", "Language: ") + (isEnglish() ? "English" : "العربية"));
+        addPlainText(t("وضع الخصوصية: ", "Privacy mode: ")
+                + (privacyMode ? t("مفعل", "on") : t("معطل", "off")));
+        addPlainText("Gemini: " + (AiClient.isConfigured(prefs)
+                ? t("متصل", "connected") : t("يحتاج إعداد", "needs setup")));
+        addPlainText(t("النطق الصوتي: ", "Speech output: ")
+                + (speechEnabled ? t("يعمل", "on") : t("متوقف", "off")));
+        addPlainText(t("الاهتزاز: ", "Vibration: ")
+                + (vibrationEnabled ? t("يعمل", "on") : t("متوقف", "off")));
+        addPlainText(t("الحفظ التلقائي: ", "Auto-save: ")
+                + (autoSaveResults ? t("مفعل", "on") : t("متوقف", "off")));
+        addPlainText(t("قارئ الشاشة: ", "Screen reader: ")
+                + (isTalkBackOn() ? t("يعمل", "detected") : t("غير مكتشف", "not detected")));
+        addPlainText(t("الإصدار: ", "Version: ") + APP_VERSION);
 
         addBackButton();
     }
 
-    // ===================================================================
-    // Text reader / document analysis
-    // ===================================================================
-
-    private void showTextReaderScreen() {
-        log("reader_open", "reader screen");
-        resetScreen(t("قراءة وتحليل المستندات", "Read & analyze documents"),
-                t("الصق نصًا أو وصف مستند ليحلله الذكاء الاصطناعي.",
-                  "Paste text or describe a document for AI analysis."));
-
-        addButton(t("📝 تحليل نص أو مستند", "📝 Analyze text/document"),
-                t("يفتح حقل لإدخال نص للتحليل العميق.",
-                  "Opens a text field for deep analysis."),
-                v -> showTextAiDialog("document_analysis",
-                        t("تحليل مستند", "Document analysis"),
-                        "Analyze for a blind user. Extract document type, concise summary, " +
-                        "dates, amounts, parties, warnings, and practical next steps. " +
-                        "For health or legal text, add safety limits."));
-
-        addButton(t("🧾 تحليل فاتورة", "🧾 Analyze invoice"),
-                t("تحليل مخصص لتفاصيل الفواتير.",
-                  "Invoice-specific analysis."),
-                v -> showTextAiDialog("invoice",
-                        t("تحليل فاتورة", "Invoice analysis"),
-                        "Extract issuer, total, due date, account number, period, " +
-                        "any late fee, and a one-sentence action item."));
-
-        addButton(t("⚖️ تحليل عقد قانوني", "⚖️ Legal contract analysis"),
-                t("شرح تعليمي لا يغني عن مختص.",
-                  "Educational only, not a substitute for a professional."),
-                v -> showTextAiDialog("legal",
-                        t("تحليل قانوني", "Legal analysis"),
-                        "Educational legal analysis. Parties, obligations, durations, " +
-                        "penalty clauses, termination, jurisdiction, and review points."));
-
-        addButton(t("💊 تحليل ورقة طبية", "💊 Medical note analysis"),
-                t("شرح آمن دون تشخيص.",
-                  "Safe explanation without diagnosis."),
-                v -> showTextAiDialog("health",
-                        t("تحليل طبي آمن", "Safe health analysis"),
-                        "Safe analysis: medication names, dosage if present, warnings, " +
-                        "and a clear note to consult a doctor or pharmacist."));
-
-        addBackButton();
+    private boolean isTalkBackOn() {
+        AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
+        return am != null && am.isEnabled() && am.isTouchExplorationEnabled();
     }
 
-    // ===================================================================
+    // ============================================================
     // Ask Basir
-    // ===================================================================
+    // ============================================================
 
-    private void showAskDialog() {
-        final EditText input = makeInput(t("اكتب سؤالك", "Type your question"), true);
-        new AlertDialog.Builder(this)
-                .setTitle(t("اسأل بصير", "Ask Basir"))
-                .setMessage(t("سيتم الإرسال إلى وسيط GPT الآمن.",
-                              "Will be sent to the secure GPT proxy."))
-                .setView(input)
-                .setPositiveButton(t("اسأل", "Ask"), (d, w) -> callAi("ask",
-                        input.getText().toString(),
-                        t("إجابة بصير", "Basir answer"),
-                        "Answer as Basir AI for a blind or low-vision user. " +
-                        "Be practical, structured, screen-reader friendly, concise when possible."))
-                .setNegativeButton(t("إلغاء", "Cancel"), null)
-                .show();
+    private void showAskScreen() {
+        resetScreen(t("اسأل بصير", "Ask Basir"),
+                t("اكتب سؤالك أو استخدم الإملاء الصوتي.",
+                  "Type your question or use voice dictation."));
+
+        EditText input = makeInput(t("اكتب سؤالك هنا", "Type your question here"), true);
+        root.addView(input, fullWidth());
+
+        addPrimaryButton(t("إرسال", "Send"), v -> {
+            String q = input.getText().toString().trim();
+            if (q.isEmpty()) {
+                speak(t("اكتب سؤالك أولًا.", "Type your question first."));
+                return;
+            }
+            callAi("ask", q, t("إجابة بصير", "Basir answer"),
+                    "Answer as Basir, screen-reader friendly and practical.");
+        });
+        addOutlineButton(t("إملاء صوتي", "Voice dictation"), v -> startVoiceCommand());
+        addOutlineButton(t("مسح", "Clear"), v -> input.setText(""));
+        addBackButton();
     }
 
-    // ===================================================================
-    // AI Lab
-    // ===================================================================
+    // ============================================================
+    // Describe image / scene
+    // ============================================================
 
-    private void showAiLabScreen() {
-        resetScreen(t("مختبر الذكاء", "AI Lab"),
-                t("أدوات متقدمة تعتمد على GPT.", "Advanced GPT-powered tools."));
+    private void showDescribeScreen() {
+        resetScreen(t("وصف صورة أو مشهد", "Describe an image or scene"),
+                t("اختر صورة من المعرض أو اكتب وصفًا للمشهد.",
+                  "Pick an image from the gallery or type a scene description."));
 
-        addButton(t("🖼 تحليل صورة بالعمق", "🖼 Deep image analysis"),
-                t("تحليل تفصيلي للصورة.", "Detailed image analysis."),
-                v -> pickImageForAi("image_analysis",
-                        t("تحليل صورة", "Image analysis"),
-                        "Detailed alt text, visible text, objects, layout, risks, next steps. " +
-                        "Do not identify faces.",
-                        "Describe this image in detail for a blind user."));
+        addCard(t("وصف تفصيلي للصورة", "Detailed image description"),
+                t("تحليل دقيق مناسب للمكفوفين.",
+                  "Detailed analysis suitable for blind users."),
+                v -> pickImageForAi("image_describe",
+                        t("وصف الصورة", "Image description"),
+                        "Provide a detailed description suitable for a blind user. " +
+                        "Start with a one-sentence summary, then objects, layout, visible text, and any practical notes.",
+                        "Describe this image in detail."));
 
-        addButton(t("📝 وصف بديل للصورة", "📝 Image alt text"),
-                t("ينشئ alt text دقيقًا.", "Generates precise alt text."),
+        addCard(t("إنشاء وصف بديل للصورة", "Generate alt text"),
+                t("نص قصير ومنظم يصلح كـ alt للصورة.",
+                  "Short structured alt text."),
                 v -> pickImageForAi("alt_text",
-                        t("وصف بديل", "Alt text"),
-                        "Precise alt text: objects, spatial relationships, colors, " +
-                        "visible text, practical relevance.",
+                        t("الوصف البديل", "Alt text"),
+                        "Write precise alt text for a blind user: objects, spatial relationships, " +
+                        "colors, visible text, practical relevance.",
                         "Write detailed alt text for this image."));
 
-        addButton(t("📱 شرح لقطة شاشة", "📱 Explain screenshot"),
-                t("يشرح عناصر الشاشة وخطوتك التالية.",
-                  "Explains screen elements and your next step."),
+        addCard(t("قراءة لقطة شاشة", "Read a screenshot"),
+                t("شرح عناصر الشاشة والخطوة التالية.",
+                  "Explain screen elements and next step."),
                 v -> pickImageForAi("screenshot",
-                        t("شرح لقطة الشاشة", "Screenshot explanation"),
-                        "Explain the screenshot for a screen-reader user: " +
-                        "page name, buttons, messages, errors, the next useful step.",
-                        "Explain this screenshot."));
+                        t("قراءة لقطة الشاشة", "Screenshot reading"),
+                        "Explain the screenshot for a screen-reader user: page, buttons, messages, errors, and the next useful step.",
+                        "Read this screenshot."));
 
-        addButton(t("📚 بطاقات مذاكرة", "📚 Study cards"),
-                t("نص ← أسئلة وأجوبة منظمة.",
-                  "Text → Q&A study cards."),
-                v -> showTextAiDialog("study_cards",
-                        t("بطاقات مذاكرة", "Study cards"),
-                        "Turn the text into direct Q&A study cards suitable for audio review."));
-
-        addButton(t("✉️ جهز رد مهذب", "✉️ Polite reply"),
-                t("يقترح ردًا مناسبًا للنبرة.",
-                  "Suggests a tone-appropriate reply."),
-                v -> showTextAiDialog("reply",
-                        t("رد مناسب", "Suitable reply"),
-                        "Explain the message tone and suggest a polite reply. " +
-                        "Provide both Arabic and English when useful."));
-
-        addButton(t("📊 تحويل جدول إلى نص", "📊 Table to text"),
-                t("يحول الجداول إلى نص منظم.",
-                  "Converts tables into structured text."),
-                v -> showTextAiDialog("table_to_text",
-                        t("تحويل جدول", "Table to text"),
-                        "Convert the table-like text into clear plain-text rows " +
-                        "with labels for each value."));
+        addOutlineButton(t("وصف نصي للمشهد", "Type a scene description"),
+                v -> showTextTaskScreen("scene_text",
+                        t("وصف المشهد", "Scene description"),
+                        t("اكتب وصفًا للمكان وسأحوله إلى توجيه عملي.",
+                          "Type a scene and I'll turn it into practical guidance."),
+                        "Turn the written scene into practical guidance: summary, obstacles, directions, risk level, next step."));
 
         addBackButton();
     }
 
-    // ===================================================================
-    // Translate
-    // ===================================================================
+    // ============================================================
+    // Documents
+    // ============================================================
 
-    private void showTranslateDialog() {
-        final EditText input = makeInput(t("الصق النص للترجمة", "Paste text to translate"), true);
-        final String target = isEnglish() ? "Arabic" : "English";
+    private void showDocumentScreen() {
+        resetScreen(t("قراءة المستندات", "Read a document"),
+                t("حلّل نصًا، فاتورة، عقدًا، ورقة طبية، أو حوّل ملفًا إلى Word.",
+                  "Analyze text, invoice, contract, medical note, or convert a file to Word."));
+
+        addCard(t("تحليل نص أو مستند", "Analyze text or document"),
+                t("الصق النص للتحليل العميق.", "Paste text for deep analysis."),
+                v -> showTextTaskScreen("document_analysis",
+                        t("تحليل المستند", "Document analysis"),
+                        t("الصق النص هنا.", "Paste the text here."),
+                        "Analyze for a blind user. Extract document type, summary, dates, amounts, parties, warnings, next steps."));
+
+        addCard(t("تحليل فاتورة", "Analyze invoice"),
+                t("الجهة، المبلغ، تاريخ الاستحقاق، رقم الحساب.",
+                  "Issuer, amount, due date, account number."),
+                v -> showTextTaskScreen("invoice",
+                        t("تحليل فاتورة", "Invoice analysis"),
+                        t("الصق نص الفاتورة هنا.", "Paste the invoice text here."),
+                        "Extract issuer, total, due date, account number, period, late fees, and one action item."));
+
+        addCard(t("تحليل عقد قانوني", "Legal contract analysis"),
+                t("شرح تعليمي لا يغني عن مختص.",
+                  "Educational explanation - not a substitute for a professional."),
+                v -> showTextTaskScreen("legal",
+                        t("تحليل قانوني", "Legal analysis"),
+                        t("الصق نص العقد هنا.", "Paste the contract text here."),
+                        "Educational legal analysis: parties, obligations, durations, penalty clauses, termination, jurisdiction."));
+
+        addCard(t("تحليل ورقة طبية", "Medical note analysis"),
+                t("شرح آمن دون تشخيص.", "Safe explanation without diagnosis."),
+                v -> showTextTaskScreen("health",
+                        t("تحليل طبي آمن", "Safe health analysis"),
+                        t("الصق النص الطبي هنا.", "Paste the medical text here."),
+                        "Safe analysis: medication names, dosage, warnings; advise consulting a doctor or pharmacist."));
+
+        addCard(t("تحويل إلى Word قابل للقراءة", "Convert to readable Word"),
+                t("حوّل PDF أو PowerPoint إلى Word منظم، مع وصف الصور والجداول للمكفوفين.",
+                  "Convert PDF or PowerPoint to a structured Word file, with image and table descriptions."),
+                v -> showConvertScreen());
+
+        addBackButton();
+    }
+
+    // ============================================================
+    // Translate
+    // ============================================================
+
+    private void showTranslateScreen() {
+        resetScreen(t("ترجمة وشرح", "Translate & explain"),
+                t("ترجمة سياقية مع شرح النبرة.",
+                  "Contextual translation with tone notes."));
+
+        EditText input = makeInput(t("الصق النص للترجمة", "Paste text to translate"), true);
+        root.addView(input, fullWidth());
+
+        addPrimaryButton(t("ترجم", "Translate"), v -> {
+            String text = input.getText().toString().trim();
+            if (text.isEmpty()) {
+                speak(t("الصق النص أولًا.", "Paste text first."));
+                return;
+            }
+            String target = isEnglish() ? "Arabic" : "English";
+            callAi("translate", text, t("الترجمة", "Translation"),
+                    "Translate to " + target + " in a natural, contextual style. " +
+                    "Then add a short note about the tone.");
+        });
+        addOutlineButton(t("مسح", "Clear"), v -> input.setText(""));
+        addBackButton();
+    }
+
+    // ============================================================
+    // Advanced tools
+    // ============================================================
+
+    private void showAdvancedScreen() {
+        resetScreen(t("أدوات متقدمة", "Advanced tools"),
+                t("أدوات إضافية تعمل عبر Gemini.",
+                  "Additional tools powered by Gemini."));
+
+        addCard(t("إنشاء بطاقات مذاكرة", "Create study cards"),
+                t("نص ← أسئلة وأجوبة منظمة.",
+                  "Text → organized Q&A cards."),
+                v -> showTextTaskScreen("study_cards",
+                        t("بطاقات مذاكرة", "Study cards"),
+                        t("الصق النص هنا.", "Paste text here."),
+                        "Turn the text into direct Q&A study cards suitable for audio review."));
+
+        addCard(t("صياغة رد مهذب", "Draft a polite reply"),
+                t("اقتراح رد مناسب للنبرة بالعربية والإنجليزية.",
+                  "Tone-aware reply in Arabic and English."),
+                v -> showTextTaskScreen("reply",
+                        t("رد مناسب", "Suitable reply"),
+                        t("الصق الرسالة هنا.", "Paste the message here."),
+                        "Explain the message tone and suggest a polite reply. Give Arabic and English versions."));
+
+        addCard(t("قراءة جدول كنص", "Read a table as text"),
+                t("جداول معقدة ← نص قابل للقراءة.",
+                  "Complex tables → screen-reader-friendly text."),
+                v -> showTextTaskScreen("table_to_text",
+                        t("قراءة جدول", "Table to text"),
+                        t("الصق نص الجدول هنا.", "Paste the table text here."),
+                        "Convert the table-like text into clear plain-text rows with labels for each value."));
+
+        addBackButton();
+    }
+
+    // ============================================================
+    // Convert (PDF/PPTX -> Word)
+    // ============================================================
+
+    private void showConvertScreen() {
+        resetScreen(t("تحويل إلى Word", "Convert to Word"),
+                t("حوّل PDF أو PowerPoint إلى Word منظم. سيرفع الملف لخادم المعالجة ثم يُحذف بعد التحويل.",
+                  "Convert PDF or PowerPoint to a structured Word file. The file is uploaded for processing and deleted after conversion."));
+
+        addPlainText(t("الملفات المدعومة: PDF، PPT، PPTX.",
+                       "Supported formats: PDF, PPT, PPTX."));
+
+        addPrimaryButton(t("اختر ملفًا للتحويل", "Choose a file to convert"), v -> {
+            if (!AiClient.isConfigured(prefs)) {
+                speak(t("Gemini يحتاج إعداد أولًا.", "Gemini needs setup first."));
+                showAiSettingsDialog();
+                return;
+            }
+            confirmAndPickFile();
+        });
+        addBackButton();
+    }
+
+    private void confirmAndPickFile() {
         new AlertDialog.Builder(this)
-                .setTitle(t("الترجمة الذكية", "Smart translate"))
-                .setMessage(t("ترجمة سياقية مع شرح النبرة.",
-                              "Contextual translation with tone notes."))
-                .setView(input)
-                .setPositiveButton(t("ترجم", "Translate"), (d, w) -> callAi("translate",
-                        input.getText().toString(),
-                        t("الترجمة", "Translation"),
-                        "Translate to " + target + " in a natural, contextual style. " +
-                        "Then add a short note about the tone (formal, casual, hesitant, etc.). " +
-                        "Keep it screen-reader friendly."))
+                .setTitle(t("تأكيد الخصوصية", "Privacy confirmation"))
+                .setMessage(t(
+                        "سيتم رفع هذا الملف إلى خادم المعالجة لتحويله إلى Word. لا يتم حفظ الملف بعد انتهاء العملية. هل تريد المتابعة؟",
+                        "This file will be uploaded for processing into a Word file. It will be deleted after conversion. Continue?"))
+                .setPositiveButton(t("متابعة", "Continue"), (d, w) -> {
+                    Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("*/*");
+                    String[] types = {
+                        "application/pdf",
+                        "application/vnd.ms-powerpoint",
+                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    };
+                    i.putExtra(Intent.EXTRA_MIME_TYPES, types);
+                    try { startActivityForResult(i, REQ_DOC_PICK); }
+                    catch (Exception e) {
+                        speak(t("تعذر فتح منتقي الملفات.", "Could not open file picker."));
+                    }
+                })
                 .setNegativeButton(t("إلغاء", "Cancel"), null)
                 .show();
     }
 
-    // ===================================================================
-    // Walking assistant
-    // ===================================================================
+    private void handleConvertFile(Uri uri) {
+        resetScreen(t("جاري التحويل", "Converting"),
+                t("جاري رفع الملف ومعالجته عبر Gemini. قد يستغرق دقيقة أو دقيقتين.",
+                  "Uploading and processing via Gemini. This may take a minute or two."));
+        addPlainText(t("جاري رفع الملف...", "Uploading file..."));
+        speak(t("جاري التحويل.", "Converting now."));
 
-    private void showWalkingScreen() {
-        resetScreen(t("مساعد المشي", "Walking assistant"),
-                t("تنبيه: مساعد فقط ولا يستبدل العصا البيضاء.",
-                  "Notice: assistive only; does not replace a white cane."));
+        final String baseUrl = prefs.getString("ai_server_url", "");
+        final String appToken = prefs.getString("ai_app_token", "");
+        aiExecutor.execute(() -> {
+            try {
+                File out = new File(getExternalFilesDir(null),
+                        "basir-" + System.currentTimeMillis() + ".docx");
+                AiClient.convertToDocx(MainActivity.this, baseUrl, appToken, uri,
+                        "full", lang, out);
+                log("convert", out.getName());
+                runOnUiThread(() -> showConvertResult(out));
+            } catch (Exception e) {
+                final String msg = safeError(e.getMessage());
+                log("convert_error", msg);
+                runOnUiThread(() -> {
+                    resetScreen(t("تعذر إكمال التحويل", "Conversion failed"), msg);
+                    addBackButton();
+                });
+            }
+        });
+    }
 
-        addButton(t("🛑 توقف", "🛑 Stop"), null,
-                v -> walkCommand(t("توقف", "Stop"), 650, null));
-        addButton(t("➡️ يمين قليلًا", "➡️ Slight right"), null,
-                v -> walkCommand(t("يمين قليلًا", "Slight right"), 0,
-                        new long[]{0, 120, 90, 120}));
-        addButton(t("⬅️ يسار قليلًا", "⬅️ Slight left"), null,
-                v -> walkCommand(t("يسار قليلًا", "Slight left"), 0,
-                        new long[]{0, 100, 80, 100, 80, 100}));
-        addButton(t("⚠️ عائق منخفض", "⚠️ Low obstacle"), null,
-                v -> walkCommand(t("عائق منخفض", "Low obstacle"), 180, null));
-        addButton(t("🚪 باب أمامك", "🚪 Door ahead"), null,
-                v -> walkCommand(t("باب أمامك", "Door ahead"), 250, null));
-        addButton(t("🪜 سلم", "🪜 Stairs"), null,
-                v -> walkCommand(t("سلم أمامك", "Stairs ahead"), 350, null));
+    private void showConvertResult(File docx) {
+        resetScreen(t("تم إنشاء الملف بنجاح", "File created successfully"),
+                t("ملف Word جاهز يحتوي على النص ووصف الصور والجداول.",
+                  "Word file ready with text, image and table descriptions."));
+        speak(t("تم إنشاء ملف Word بنجاح.", "Word file created successfully."));
+        addPlainText(t("اسم الملف: ", "File name: ") + docx.getName());
+
+        addPrimaryButton(t("فتح ملف Word", "Open the Word file"), v -> {
+            Uri uri = Uri.fromFile(docx);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            try { startActivity(i); }
+            catch (Exception e) { speak(t("لا يوجد تطبيق لفتح Word.", "No app available to open Word.")); }
+        });
+        addOutlineButton(t("مشاركة الملف", "Share the file"), v -> {
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+            i.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(docx));
+            startActivity(Intent.createChooser(i, t("مشاركة", "Share")));
+        });
+        addOutlineButton(t("حذف الملف من الجهاز", "Delete file from device"), v -> {
+            if (docx.delete()) speak(t("تم الحذف.", "Deleted."));
+            showHome();
+        });
         addBackButton();
     }
 
-    private void walkCommand(String msg, int singleVibrate, long[] pattern) {
-        log("walk_alert", msg);
-        speak(msg);
-        if (vibrationEnabled) {
-            if (pattern != null) vibratePattern(pattern);
-            else if (singleVibrate > 0) vibrate(singleVibrate);
-        }
-    }
-
-    // ===================================================================
+    // ============================================================
     // Emergency
-    // ===================================================================
+    // ============================================================
 
     private void showEmergencyScreen() {
-        resetScreen(t("وضع الطوارئ", "Emergency mode"),
-                t("إرسال رسالة استغاثة بموقعك التقريبي.",
-                  "Send a help message with your approximate location."));
+        resetScreen(t("الطوارئ والمساعدة", "Emergency & help"),
+                t("استغاثة سريعة مع مشاركة موقعك التقريبي.",
+                  "Quick help with approximate location sharing."));
 
         String contact = prefs.getString("emergency_contact", "");
-        addParagraph(contact.isEmpty()
-                ? t("لم يتم حفظ جهة طوارئ بعد.", "No emergency contact saved.")
-                : t("جهة الطوارئ: ", "Emergency contact: ") + contact);
+        addPlainText(contact.isEmpty()
+                ? t("لم يتم حفظ جهة طوارئ بعد.", "No emergency contact saved yet.")
+                : t("جهة الطوارئ محفوظة: ", "Emergency contact saved: ") + contact);
 
-        addButton(t("📨 إرسال استغاثة الآن", "📨 Send help now"), null,
-                v -> sendEmergencySms());
-        addButton(t("🔊 صوت تحديد المكان", "🔊 Locator sound"), null, v -> {
-            log("emergency_locator", "locator");
+        addPrimaryButton(t("إرسال استغاثة الآن", "Send help now"),
+                v -> confirmAndSendEmergency());
+        addOutlineButton(t("مشاركة موقعي الحالي", "Share my current location"),
+                v -> shareLocation());
+        addOutlineButton(t("تشغيل صوت لتحديد مكاني", "Play locator sound"), v -> {
+            log("locator", "play");
             for (int i = 0; i < 3; i++) speak(t("أنا هنا. أحتاج مساعدة.", "I am here. I need help."));
             if (vibrationEnabled) vibrate(1000);
         });
-        addButton(t("📞 حفظ/تغيير جهة الطوارئ", "📞 Set emergency contact"), null,
+        addOutlineButton(t("إضافة أو تغيير جهة الطوارئ", "Add or change emergency contact"),
                 v -> showEmergencyContactDialog());
         addBackButton();
     }
 
+    private void confirmAndSendEmergency() {
+        new AlertDialog.Builder(this)
+                .setTitle(t("تأكيد الإرسال", "Confirm send"))
+                .setMessage(t("هل تريد إرسال رسالة استغاثة إلى جهة الطوارئ؟",
+                              "Send a help message to your emergency contact?"))
+                .setPositiveButton(t("إرسال الآن", "Send now"), (d, w) -> sendEmergencySms())
+                .setNegativeButton(t("إلغاء", "Cancel"), null)
+                .show();
+    }
+
     private void sendEmergencySms() {
         String c = prefs.getString("emergency_contact", "").trim();
-        if (c.isEmpty()) {
-            speak(t("احفظ جهة الطوارئ أولًا.", "Save an emergency contact first."));
-            showEmergencyContactDialog();
-            return;
-        }
+        if (c.isEmpty()) { showEmergencyContactDialog(); return; }
         String msg = t("أنا بحاجة إلى مساعدة. موقعي التقريبي: ",
                        "I need help. My approximate location: ") + getLastKnownLocation();
         log("emergency_sms", msg);
@@ -601,15 +853,25 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         i.setData(Uri.parse("smsto:" + c.replace(" ", "")));
         i.putExtra("sms_body", msg);
         try { startActivity(i); } catch (Exception e) {
-            speak(t("تعذر فتح تطبيق الرسائل.", "Could not open messaging."));
+            speak(t("تعذر فتح الرسائل.", "Could not open messaging."));
         }
+    }
+
+    private void shareLocation() {
+        String loc = getLastKnownLocation();
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_TEXT, loc);
+        startActivity(Intent.createChooser(i, t("مشاركة الموقع", "Share location")));
     }
 
     private String getLastKnownLocation() {
         try {
             if (Build.VERSION.SDK_INT >= 23 &&
-                    checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-                    checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                    checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
+                            android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                    checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) !=
+                            android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 return t("إذن الموقع غير ممنوح", "Location permission not granted");
             }
             LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
@@ -624,7 +886,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     private void showEmergencyContactDialog() {
-        final EditText input = makeInput(t("مثال: +9665XXXXXXXX", "e.g.: +9665XXXXXXXX"), false);
+        EditText input = makeInput(t("مثال: +9665XXXXXXXX", "e.g.: +9665XXXXXXXX"), false);
         input.setInputType(InputType.TYPE_CLASS_PHONE);
         input.setText(prefs.getString("emergency_contact", ""));
         new AlertDialog.Builder(this)
@@ -640,110 +902,119 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
                 .show();
     }
 
-    // ===================================================================
-    // Memory: people, products, places
-    // ===================================================================
+    // ============================================================
+    // Memory
+    // ============================================================
 
     private void showMemoryScreen() {
-        resetScreen(t("الذاكرة الشخصية", "Personal memory"),
-                t("بيانات محفوظة محليًا على جهازك فقط.",
-                  "Data saved locally on your device only."));
+        resetScreen(t("محفوظاتي الخاصة", "My saved items"),
+                t("احفظ أشخاصًا، منتجات، أدوية، وأماكن. تُخزَّن محليًا على جهازك فقط.",
+                  "Save people, products, medicine, and places. Stored locally on your device only."));
 
-        addButton(t("👤 إضافة شخص", "👤 Add person"), null,
+        addCard(t("إضافة شخص", "Add person"), null,
                 v -> showThreeFieldDialog(t("إضافة شخص", "Add person"),
-                        t("الاسم", "Name"),
-                        t("العلاقة", "Relation"),
-                        t("ملاحظات", "Notes"),
+                        t("الاسم", "Name"), t("العلاقة", "Relation"), t("ملاحظات", "Notes"),
                         (a, b, c) -> { db.insertPerson(a, b, c);
-                            speak(t("تم حفظ الشخص.", "Person saved."));
-                            showMemoryScreen(); }));
+                            speak(t("تم الحفظ.", "Saved.")); showMemoryScreen(); }));
 
-        addButton(t("🛒 إضافة منتج/دواء", "🛒 Add product/medicine"), null,
+        addCard(t("إضافة منتج أو دواء", "Add product or medicine"), null,
                 v -> showThreeFieldDialog(t("إضافة منتج", "Add product"),
-                        t("الاسم", "Name"),
-                        t("الباركود", "Barcode"),
-                        t("ملاحظات", "Notes"),
+                        t("الاسم", "Name"), t("الباركود", "Barcode"), t("ملاحظات", "Notes"),
                         (a, b, c) -> { db.insertProduct(a, b, c);
-                            speak(t("تم حفظ المنتج.", "Product saved."));
-                            showMemoryScreen(); }));
+                            speak(t("تم الحفظ.", "Saved.")); showMemoryScreen(); }));
 
-        addButton(t("📍 إضافة مكان", "📍 Add place"), null,
+        addCard(t("إضافة مكان", "Add place"), null,
                 v -> showThreeFieldDialog(t("إضافة مكان", "Add place"),
-                        t("الاسم", "Name"),
-                        t("الوصف", "Description"),
-                        t("ملاحظات الوصول", "Access notes"),
+                        t("الاسم", "Name"), t("الوصف", "Description"), t("ملاحظات الوصول", "Access notes"),
                         (a, b, c) -> { db.insertPlace(a, b, c);
-                            speak(t("تم حفظ المكان.", "Place saved."));
-                            showMemoryScreen(); }));
+                            speak(t("تم الحفظ.", "Saved.")); showMemoryScreen(); }));
 
-        addButton(t("📖 عرض الذاكرة", "📖 Show memory"), null, v -> {
+        addCard(t("عرض المحفوظات", "Show saved items"), null, v -> {
             String summary = db.getMemorySummary(isEnglish());
-            if (summary.isEmpty()) summary = t("لا توجد ذاكرة محفوظة بعد.", "No memory saved yet.");
-            showResult(t("الذاكرة الشخصية", "Personal memory"), summary, false);
+            if (summary.isEmpty()) summary = t("لا توجد عناصر محفوظة.", "No saved items.");
+            showResult(t("المحفوظات الخاصة", "Saved items"), summary, false);
         });
 
         addBackButton();
     }
 
-    private interface ThreeFieldAction { void run(String a, String b, String c); }
+    private interface Three { void run(String a, String b, String c); }
 
-    private void showThreeFieldDialog(String title, String h1, String h2, String h3, ThreeFieldAction action) {
+    private void showThreeFieldDialog(String title, String h1, String h2, String h3, Three action) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(12), dp(8), dp(12), dp(8));
-        EditText e1 = makeInput(h1, false);
-        EditText e2 = makeInput(h2, false);
-        EditText e3 = makeInput(h3, true);
-        box.addView(e1, fullWidth());
-        box.addView(e2, fullWidth());
-        box.addView(e3, fullWidth());
+        EditText a = makeInput(h1, false);
+        EditText b = makeInput(h2, false);
+        EditText c = makeInput(h3, true);
+        box.addView(a, fullWidth()); box.addView(b, fullWidth()); box.addView(c, fullWidth());
         new AlertDialog.Builder(this).setTitle(title).setView(box)
                 .setPositiveButton(t("حفظ", "Save"), (d, w) -> action.run(
-                        e1.getText().toString().trim(),
-                        e2.getText().toString().trim(),
-                        e3.getText().toString().trim()))
+                        a.getText().toString().trim(),
+                        b.getText().toString().trim(),
+                        c.getText().toString().trim()))
                 .setNegativeButton(t("إلغاء", "Cancel"), null).show();
     }
 
-    // ===================================================================
-    // Archive & History
-    // ===================================================================
+    // ============================================================
+    // Archive / History
+    // ============================================================
 
     private void showArchiveScreen() {
-        resetScreen(t("الأرشيف", "Archive"),
-                t("نتائج محفوظة من الذكاء الاصطناعي.",
-                  "Saved AI analysis results."));
+        resetScreen(t("المحفوظات", "Archive"),
+                t("نتائج تحليل محفوظة محليًا.", "Locally saved analysis results."));
         List<String> docs = db.getRecentDocuments(40);
-        if (docs.isEmpty()) addParagraph(t("لا توجد نتائج محفوظة بعد.", "No saved results yet."));
-        else for (int i = 0; i < docs.size(); i++) addParagraph((i + 1) + ". " + docs.get(i));
+        if (docs.isEmpty()) addPlainText(t("لا توجد نتائج محفوظة بعد.", "No saved results yet."));
+        else for (int i = 0; i < docs.size(); i++) addPlainText((i + 1) + ". " + docs.get(i));
         addBackButton();
     }
 
     private void showHistoryScreen() {
-        resetScreen(t("سجل النشاط", "Activity log"),
-                t("النصوص فقط (لا تُحفظ الصور).",
-                  "Text only (images are not saved)."));
+        resetScreen(t("آخر العمليات", "Recent activity"),
+                t("السجل يحفظ النصوص فقط، ولا يحفظ الصور أو الملفات.",
+                  "The log stores text only, no images or files."));
         List<String> logs = db.getRecentLogs(40);
-        if (logs.isEmpty()) addParagraph(t("لا يوجد نشاط بعد.", "No activity yet."));
-        else for (int i = 0; i < logs.size(); i++) addParagraph((i + 1) + ". " + logs.get(i));
-        addButton(t("🗑 مسح السجل", "🗑 Clear log"), null, v -> {
-            db.clearLogs();
-            speak(t("تم المسح.", "Cleared."));
-            showHistoryScreen();
+        if (logs.isEmpty()) addPlainText(t("لا توجد عمليات بعد.", "No activity yet."));
+        else for (int i = 0; i < logs.size(); i++) addPlainText((i + 1) + ". " + humanLog(logs.get(i)));
+        addOutlineButton(t("مسح السجل", "Clear log"), v -> {
+            db.clearLogs(); speak(t("تم المسح.", "Cleared.")); showHistoryScreen();
         });
         addBackButton();
     }
 
-    // ===================================================================
-    // Settings (extensive)
-    // ===================================================================
+    /** Replace technical task keys with friendly Arabic/English text. */
+    private String humanLog(String raw) {
+        String r = raw;
+        r = r.replace("[ask]", t("سؤال", "Question"));
+        r = r.replace("[translate]", t("ترجمة", "Translation"));
+        r = r.replace("[document_analysis]", t("تحليل مستند", "Document analysis"));
+        r = r.replace("[image_describe]", t("وصف صورة", "Image description"));
+        r = r.replace("[alt_text]", t("وصف بديل", "Alt text"));
+        r = r.replace("[screenshot]", t("لقطة شاشة", "Screenshot"));
+        r = r.replace("[scene_text]", t("وصف مشهد", "Scene description"));
+        r = r.replace("[invoice]", t("فاتورة", "Invoice"));
+        r = r.replace("[legal]", t("قانوني", "Legal"));
+        r = r.replace("[health]", t("طبي", "Medical"));
+        r = r.replace("[study_cards]", t("بطاقات مذاكرة", "Study cards"));
+        r = r.replace("[reply]", t("رد", "Reply"));
+        r = r.replace("[table_to_text]", t("جدول", "Table"));
+        r = r.replace("[convert]", t("تحويل ملف", "File convert"));
+        r = r.replace("[emergency_sms]", t("استغاثة", "Emergency"));
+        r = r.replace("[locator]", t("صوت تحديد المكان", "Locator"));
+        return r;
+    }
+
+    // ============================================================
+    // Settings (grouped, with Switches)
+    // ============================================================
 
     private void showSettingsScreen() {
         resetScreen(t("الإعدادات", "Settings"),
-                t("تخصيص كامل للتطبيق.", "Full customization."));
+                t("تخصيص بصير ليناسبك.", "Customize Basir to suit you."));
 
-        // Language
-        addButton(isEnglish() ? "🌐 العربية / Switch to Arabic" : "🌐 English / التبديل للإنجليزية", null, v -> {
+        addSection(t("اللغة", "Language"));
+        addPlainText(t("اللغة الحالية: ", "Current language: ") + (isEnglish() ? "English" : "العربية"));
+        addOutlineButton(isEnglish() ? "التبديل إلى العربية" : "Switch to English", v -> {
             lang = isEnglish() ? "ar" : "en";
             prefs.edit().putString("language", lang).apply();
             applyTtsConfig();
@@ -751,80 +1022,52 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
             showSettingsScreen();
         });
 
-        // Privacy
-        addButton(privacyMode ? t("🔓 إيقاف الخصوصية", "🔓 Turn privacy off")
-                              : t("🔒 تشغيل الخصوصية", "🔒 Turn privacy on"), null, v -> {
-            privacyMode = !privacyMode;
-            prefs.edit().putBoolean("privacy_mode", privacyMode).apply();
-            speak(privacyMode ? t("الخصوصية مفعّلة.", "Privacy on.")
-                              : t("الخصوصية متوقفة.", "Privacy off."));
-            showSettingsScreen();
+        addSection(t("الصوت والاهتزاز", "Voice & vibration"));
+        addSwitchRow(t("النطق الصوتي", "Speech output"), speechEnabled, checked -> {
+            speechEnabled = checked;
+            prefs.edit().putBoolean("speech_enabled", checked).apply();
+        });
+        addSwitchRow(t("الاهتزاز", "Vibration"), vibrationEnabled, checked -> {
+            vibrationEnabled = checked;
+            prefs.edit().putBoolean("vibration_enabled", checked).apply();
+        });
+        addOutlineButton(t("سرعة النطق: ", "Speech rate: ") + rateLabel(), v -> showTtsRateDialog());
+
+        addSection(t("المظهر", "Appearance"));
+        addOutlineButton(t("حجم الخط: ", "Font size: ") + fontLabel(), v -> showFontStepDialog());
+        addPlainText(t("الوضع الداكن يتبع إعدادات النظام تلقائيًا.",
+                       "Dark mode follows your system settings automatically."));
+
+        addSection(t("الخصوصية", "Privacy"));
+        addSwitchRow(t("وضع الخصوصية", "Privacy mode"), privacyMode, checked -> {
+            privacyMode = checked;
+            prefs.edit().putBoolean("privacy_mode", checked).apply();
+        });
+        addSwitchRow(t("الحفظ التلقائي للنتائج", "Auto-save results"), autoSaveResults, checked -> {
+            autoSaveResults = checked;
+            prefs.edit().putBoolean("auto_save", checked).apply();
         });
 
-        // Speech enabled
-        addButton(speechEnabled ? t("🔇 إيقاف النطق", "🔇 Disable speech")
-                                : t("🔊 تشغيل النطق", "🔊 Enable speech"), null, v -> {
-            speechEnabled = !speechEnabled;
-            prefs.edit().putBoolean("speech_enabled", speechEnabled).apply();
-            if (speechEnabled) speak(t("تم تشغيل النطق.", "Speech enabled."));
-            showSettingsScreen();
+        addSection("Gemini");
+        addPlainText(t("الحالة: ", "Status: ")
+                + (AiClient.isConfigured(prefs) ? t("متصل", "connected") : t("يحتاج إعداد", "needs setup")));
+        addOutlineButton(t("إعداد Gemini", "Gemini setup"), v -> showAiSettingsDialog());
+        addOutlineButton(t("اختبار اتصال Gemini", "Test Gemini connection"), v -> {
+            if (!AiClient.isConfigured(prefs)) { showAiSettingsDialog(); return; }
+            callAi("health", t("اختبار اتصال من بصير", "Connection test from Basir"),
+                    t("اختبار Gemini", "Gemini test"),
+                    "Return one short sentence confirming the connection works.");
         });
 
-        // Vibration
-        addButton(vibrationEnabled ? t("📴 إيقاف الاهتزاز", "📴 Disable vibration")
-                                   : t("📳 تشغيل الاهتزاز", "📳 Enable vibration"), null, v -> {
-            vibrationEnabled = !vibrationEnabled;
-            prefs.edit().putBoolean("vibration_enabled", vibrationEnabled).apply();
-            speak(vibrationEnabled ? t("الاهتزاز مفعّل.", "Vibration on.")
-                                   : t("الاهتزاز متوقف.", "Vibration off."));
-            showSettingsScreen();
-        });
+        addSection(t("الطوارئ", "Emergency"));
+        addOutlineButton(t("جهة الطوارئ", "Emergency contact"), v -> showEmergencyContactDialog());
 
-        // TTS rate
-        addButton(t("🎙 سرعة النطق", "🎙 Speech rate") + ": " + rateLabel(), null,
-                v -> showTtsRateDialog());
-
-        // Font step
-        addButton(t("🔠 حجم الخط", "🔠 Font size") + ": " + fontLabel(), null,
-                v -> showFontStepDialog());
-
-        // Auto save
-        addButton(autoSaveResults ? t("📥 إيقاف الحفظ التلقائي", "📥 Disable auto-save")
-                                  : t("📥 تشغيل الحفظ التلقائي", "📥 Enable auto-save"), null, v -> {
-            autoSaveResults = !autoSaveResults;
-            prefs.edit().putBoolean("auto_save", autoSaveResults).apply();
-            speak(autoSaveResults ? t("الحفظ التلقائي مفعّل.", "Auto-save on.")
-                                  : t("الحفظ التلقائي متوقف.", "Auto-save off."));
-            showSettingsScreen();
-        });
-
-        // Emergency contact
-        addButton(t("📞 جهة الطوارئ", "📞 Emergency contact"), null,
-                v -> showEmergencyContactDialog());
-
-        // AI proxy
-        addButton(t("🔌 إعداد وسيط GPT", "🔌 GPT proxy setup"), null,
-                v -> showAiSettingsDialog());
-
-        // Test AI
-        addButton(t("✅ اختبار الاتصال بالذكاء", "✅ Test AI connection"), null, v -> {
-            if (!AiClient.isConfigured(prefs)) {
-                speak(t("اضبط رابط الوسيط أولًا.", "Configure the proxy URL first."));
-                showAiSettingsDialog();
-                return;
-            }
-            callAi("health",
-                    t("اختبار اتصال من تطبيق بصير AI", "Connection test from Basir AI"),
-                    t("اختبار GPT", "GPT test"),
-                    "Return one short sentence confirming the proxy is working for Basir AI.");
-        });
-
-        // Clear data
-        addButton(t("🧹 حذف كل البيانات المحلية", "🧹 Delete all local data"), null,
+        addSection(t("بيانات الجهاز", "Device data"));
+        addDangerButton(t("حذف بياناتي من الجهاز", "Delete my data from the device"),
                 v -> new AlertDialog.Builder(this)
                         .setTitle(t("تأكيد الحذف", "Confirm delete"))
-                        .setMessage(t("سيتم حذف السجل والأرشيف والذاكرة. لا يمكن التراجع.",
-                                      "Log, archive and memory will be deleted. Cannot be undone."))
+                        .setMessage(t("سيتم حذف السجل والمحفوظات. لا يمكن التراجع.",
+                                      "The log and saved items will be deleted. Cannot be undone."))
                         .setPositiveButton(t("احذف", "Delete"), (d, w) -> {
                             db.clearAllData();
                             speak(t("تم الحذف.", "Deleted."));
@@ -850,35 +1093,23 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
     }
 
     private void showTtsRateDialog() {
-        String[] items = {
-                t("بطيء", "Slow"),
-                t("عادي", "Normal"),
-                t("سريع", "Fast")
-        };
-        final float[] values = {0.7f, 0.95f, 1.3f};
-        new AlertDialog.Builder(this)
-                .setTitle(t("سرعة النطق", "Speech rate"))
+        final String[] items = { t("بطيء", "Slow"), t("عادي", "Normal"), t("سريع", "Fast") };
+        final float[] values = { 0.7f, 0.95f, 1.3f };
+        new AlertDialog.Builder(this).setTitle(t("سرعة النطق", "Speech rate"))
                 .setItems(items, (d, which) -> {
                     ttsRate = values[which];
                     prefs.edit().putFloat("tts_rate", ttsRate).apply();
                     applyTtsConfig();
-                    speak(t("تم ضبط السرعة.", "Rate updated."));
                     showSettingsScreen();
                 }).show();
     }
 
     private void showFontStepDialog() {
-        String[] items = {
-                t("عادي", "Normal"),
-                t("كبير", "Large"),
-                t("كبير جدًا", "X-Large")
-        };
-        new AlertDialog.Builder(this)
-                .setTitle(t("حجم الخط", "Font size"))
+        final String[] items = { t("عادي", "Normal"), t("كبير", "Large"), t("كبير جدًا", "X-Large") };
+        new AlertDialog.Builder(this).setTitle(t("حجم الخط", "Font size"))
                 .setItems(items, (d, which) -> {
                     fontStep = which;
                     prefs.edit().putInt("font_step", fontStep).apply();
-                    speak(t("تم تغيير الحجم.", "Font size changed."));
                     showSettingsScreen();
                 }).show();
     }
@@ -889,23 +1120,26 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         box.setPadding(dp(12), dp(8), dp(12), dp(8));
 
         TextView info = new TextView(this);
-        info.setText(t("أدخل رابط الوسيط الآمن. لا تضع مفتاح OpenAI داخل التطبيق.",
-                       "Enter the secure proxy URL. Never put the OpenAI key inside the app."));
-        info.setTextSize(textSize(15));
+        info.setText(t(
+                "أدخل رابط مزود الذكاء الاصطناعي (الخادم الآمن). لا يتم حفظ مفتاح Gemini داخل التطبيق - يبقى في الخادم فقط.",
+                "Enter the AI provider URL (secure proxy). The Gemini key is never stored inside the app - it stays only on the server."));
+        info.setTextSize(textSize(14));
+        info.setTextColor(colorTextSec());
         box.addView(info, fullWidth());
 
-        final EditText url = makeInput(
-                t("https://your-server/api/basir", "https://your-server/api/basir"), false);
+        final EditText url = makeInput("https://your-server/api/basir", false);
         url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(prefs.getString("ai_server_url", ""));
-        box.addView(url, fullWidth());
+        LinearLayout.LayoutParams up = fullWidth(); up.setMargins(0, dp(10), 0, 0);
+        box.addView(url, up);
 
         final EditText token = makeInput(t("رمز التطبيق (اختياري)", "App token (optional)"), false);
         token.setText(prefs.getString("ai_app_token", ""));
-        box.addView(token, fullWidth());
+        LinearLayout.LayoutParams tp = fullWidth(); tp.setMargins(0, dp(8), 0, 0);
+        box.addView(token, tp);
 
         new AlertDialog.Builder(this)
-                .setTitle(t("وسيط GPT", "GPT Proxy"))
+                .setTitle(t("إعداد Gemini", "Gemini setup"))
                 .setView(box)
                 .setPositiveButton(t("حفظ", "Save"), (d, w) -> {
                     prefs.edit()
@@ -914,190 +1148,193 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
                             .apply();
                     speak(AiClient.isConfigured(prefs)
                             ? t("تم الحفظ.", "Saved.")
-                            : t("تم الحفظ لكن الرابط ناقص.", "Saved but URL is incomplete."));
+                            : t("الرابط غير مكتمل.", "URL is incomplete."));
                     showSettingsScreen();
                 })
                 .setNegativeButton(t("إلغاء", "Cancel"), null)
                 .show();
     }
 
-    // ===================================================================
-    // About & Contact
-    // ===================================================================
+    // ============================================================
+    // About
+    // ============================================================
 
     private void showAboutScreen() {
         resetScreen(t("حول التطبيق", "About"),
-                t("بصير AI - عينك الذكية في كل مكان.",
-                  "Basir AI - Your smart eye, everywhere."));
+                t("بصير - مساعد ذكي للمكفوفين وضعاف البصر.",
+                  "Basir - smart assistant for blind and low-vision users."));
 
-        addParagraph(t(
+        addPlainText(t(
+                "بصير يساعدك في قراءة المستندات، وصف الصور، ترجمة النصوص، تنظيم محفوظاتك، والاستفادة من أدوات الذكاء الاصطناعي بطريقة آمنة وسهلة.\n\n" +
+                "مهم: التطبيق أداة مساعدة فقط، ولا يغني عن العصا البيضاء، الطبيب، المحامي، أو خدمات الطوارئ الرسمية في المواقف الخطرة.\n\n" +
+                "الخصوصية: لا يتم حفظ الصور أو الملفات تلقائيًا. تتم المعالجة بعد موافقة المستخدم، ويمكن حذف البيانات المحلية من الإعدادات.\n\n" +
                 "الإصدار: " + APP_VERSION + "\n" +
                 "المطور: عبدالله الراشدي\n" +
-                "البريد: " + CONTACT_EMAIL + "\n\n" +
-                "بصير AI مساعد ذكي شامل للمكفوفين وضعاف البصر، " +
-                "يجمع بين تحليل المشاهد، قراءة المستندات، الترجمة الذكية، " +
-                "مساعدة المشي، الذاكرة الشخصية، ووضع الطوارئ. " +
-                "يعتمد على وسيط آمن يشغل GPT دون كشف أي مفاتيح داخل التطبيق.\n\n" +
-                "تنبيه: التطبيق مساعد فقط. لا يستبدل العصا البيضاء، الطبيب، " +
-                "المحامي، أو خدمات الطوارئ في المواقف الخطرة.",
+                "البريد: " + CONTACT_EMAIL,
 
+                "Basir helps you read documents, describe images, translate texts, organize your saved items, and use AI tools in a safe and simple way.\n\n" +
+                "Important: The app is assistive only and does not replace a white cane, a doctor, a lawyer, or official emergency services in dangerous situations.\n\n" +
+                "Privacy: Images and files are never saved automatically. Processing happens only after you confirm, and local data can be deleted from settings.\n\n" +
                 "Version: " + APP_VERSION + "\n" +
                 "Developer: Abdullah Al-Rashidi\n" +
-                "Email: " + CONTACT_EMAIL + "\n\n" +
-                "Basir AI is a comprehensive smart assistant for blind and low-vision users. " +
-                "It combines scene analysis, document reading, smart translation, walking " +
-                "assistance, personal memory and emergency mode. It uses a secure proxy " +
-                "to run GPT without exposing any API key inside the app.\n\n" +
-                "Notice: The app is assistive only. It does not replace a white cane, a doctor, " +
-                "a lawyer, or emergency services in dangerous situations."));
+                "Email: " + CONTACT_EMAIL));
 
-        addButton(t("✉️ راسل المطور", "✉️ Email the developer"), null, v -> {
+        addPrimaryButton(t("مراسلة المطور", "Email the developer"), v -> {
             Intent i = new Intent(Intent.ACTION_SENDTO);
             i.setData(Uri.parse("mailto:" + CONTACT_EMAIL));
-            i.putExtra(Intent.EXTRA_SUBJECT, "Basir AI feedback");
+            i.putExtra(Intent.EXTRA_SUBJECT, "Basir feedback");
             try { startActivity(i); } catch (Exception e) {
                 speak(t("تعذر فتح البريد.", "Could not open email."));
             }
         });
-
-        addButton(t("📤 مشاركة بريد التواصل", "📤 Share contact email"), null, v -> {
+        addOutlineButton(t("مشاركة التطبيق", "Share the app"), v -> {
             Intent i = new Intent(Intent.ACTION_SEND);
             i.setType("text/plain");
-            i.putExtra(Intent.EXTRA_TEXT, CONTACT_EMAIL);
-            startActivity(Intent.createChooser(i,
-                    t("مشاركة البريد", "Share email")));
+            i.putExtra(Intent.EXTRA_TEXT, t(
+                    "تطبيق بصير - مساعد ذكي للمكفوفين. تواصل: " + CONTACT_EMAIL,
+                    "Basir - smart assistant for blind users. Contact: " + CONTACT_EMAIL));
+            startActivity(Intent.createChooser(i, t("مشاركة", "Share")));
         });
-
         addBackButton();
     }
 
-    // ===================================================================
-    // AI dialogs & image picker
-    // ===================================================================
+    // ============================================================
+    // Text + image AI flow (full screen, not dialog)
+    // ============================================================
 
-    private void showTextAiDialog(String task, String title, String instruction) {
-        final EditText input = makeInput(t("الصق النص هنا", "Paste text here"), true);
-        new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setMessage(AiClient.isConfigured(prefs)
-                        ? t("سيتم الإرسال إلى الوسيط.", "Will be sent to the proxy.")
-                        : t("اضبط الوسيط أولًا للحصول على نتيجة حقيقية.",
-                            "Configure the proxy first for a real result."))
-                .setView(input)
-                .setPositiveButton(t("تشغيل", "Run"), (d, w) -> {
-                    if (AiClient.isConfigured(prefs)) {
-                        callAi(task, input.getText().toString(), title, instruction);
-                    } else {
-                        showAiSettingsDialog();
-                    }
-                })
-                .setNegativeButton(t("إلغاء", "Cancel"), null).show();
+    private void showTextTaskScreen(String task, String title, String hint, String instruction) {
+        resetScreen(title, t("اكتب أو ألصق النص ثم اضغط تشغيل.",
+                             "Type or paste the text, then tap Run."));
+        if (!AiClient.isConfigured(prefs)) {
+            addPlainText(t("Gemini يحتاج إعداد. افتح الإعدادات ثم إعداد Gemini.",
+                           "Gemini needs setup. Open Settings → Gemini setup."));
+            addOutlineButton(t("إعداد Gemini الآن", "Open Gemini setup now"), v -> showAiSettingsDialog());
+            addBackButton();
+            return;
+        }
+        EditText input = makeInput(hint, true);
+        root.addView(input, fullWidth());
+        addPrimaryButton(t("تشغيل", "Run"), v -> {
+            String text = input.getText().toString().trim();
+            if (text.isEmpty()) { speak(t("اكتب نصًا أولًا.", "Type some text first.")); return; }
+            callAi(task, text, title, instruction);
+        });
+        addBackButton();
     }
 
     private void pickImageForAi(String task, String title, String instruction, String prompt) {
         if (!AiClient.isConfigured(prefs)) {
-            speak(t("تحليل الصور يتطلب ضبط الوسيط.", "Image analysis requires proxy setup."));
+            speak(t("Gemini يحتاج إعداد.", "Gemini needs setup."));
             showAiSettingsDialog();
             return;
         }
-        pendingTask = task;
-        pendingTitle = title;
-        pendingInstruction = instruction;
-        pendingPrompt = prompt;
+        pendingTask = task; pendingTitle = title;
+        pendingInstruction = instruction; pendingPrompt = prompt;
         Intent i = new Intent(Intent.ACTION_GET_CONTENT);
         i.setType("image/*");
         i.addCategory(Intent.CATEGORY_OPENABLE);
-        try {
-            startActivityForResult(Intent.createChooser(i,
-                    t("اختر صورة", "Choose an image")), REQ_IMAGE_PICK);
-        } catch (Exception e) {
-            speak(t("تعذر فتح المنتقي.", "Could not open picker."));
-        }
+        try { startActivityForResult(Intent.createChooser(i, t("اختر صورة", "Choose image")), REQ_IMAGE_PICK); }
+        catch (Exception e) { speak(t("تعذر فتح المنتقي.", "Could not open picker.")); }
     }
 
     private void handlePickedImage(Uri uri) {
-        String title = pendingTitle;
-        resetScreen(title, t("جاري إرسال الصورة للوسيط...",
-                             "Sending image to the proxy..."));
-        final String serverUrl = prefs.getString("ai_server_url", "").trim();
-        final String appToken = prefs.getString("ai_app_token", "").trim();
+        resetScreen(pendingTitle, t("جاري تحليل الصورة عبر Gemini...",
+                                    "Analyzing the image via Gemini..."));
+        addPlainText(t("قد يستغرق ذلك بضع ثوانٍ.", "This may take a few seconds."));
+        speak(t("جاري التحليل.", "Analyzing now."));
+
+        final String url = prefs.getString("ai_server_url", "");
+        final String token = prefs.getString("ai_app_token", "");
         aiExecutor.execute(() -> {
             try {
                 String mime = AiClient.detectMime(MainActivity.this, uri);
                 byte[] bytes = AiClient.readUriBytes(MainActivity.this, uri, 6 * 1024 * 1024);
                 String b64 = AiClient.encodeBase64(bytes);
-                String answer = AiClient.ask(serverUrl, appToken, pendingTask,
-                        pendingPrompt, pendingInstruction, lang, b64, mime);
-                log("ai_image_" + pendingTask, answer);
-                runOnUiThread(() -> showResult(title, answer, true));
+                String answer = AiClient.ask(url, token, pendingTask, pendingPrompt,
+                        pendingInstruction, lang, b64, mime);
+                log(pendingTask, answer);
+                runOnUiThread(() -> showResult(pendingTitle, answer, true));
             } catch (Exception e) {
-                final String msg = t("تعذر تحليل الصورة. ", "Image analysis failed. ") +
-                        safeError(e.getMessage());
-                log("ai_image_error", msg);
-                runOnUiThread(() -> showResult(
-                        t("خطأ تحليل الصورة", "Image analysis error"), msg, false));
+                final String msg = errorMessage(e);
+                log("image_error", msg);
+                runOnUiThread(() -> {
+                    resetScreen(t("تعذر إكمال العملية", "Could not complete the operation"), msg);
+                    addBackButton();
+                });
             }
         });
     }
 
     private void callAi(String task, String input, String title, String instruction) {
         if (input == null || input.trim().isEmpty()) {
-            speak(t("لم يتم إدخال نص.", "No text entered."));
-            return;
+            speak(t("لم يتم إدخال نص.", "No text entered.")); return;
         }
-        if (!AiClient.isConfigured(prefs)) {
-            showAiSettingsDialog();
-            return;
-        }
-        final String serverUrl = prefs.getString("ai_server_url", "").trim();
-        final String appToken = prefs.getString("ai_app_token", "").trim();
-        resetScreen(title, t("جاري الاتصال بالوسيط...", "Connecting to the proxy..."));
+        if (!AiClient.isConfigured(prefs)) { showAiSettingsDialog(); return; }
+        resetScreen(title, t("جاري الاتصال بـ Gemini...", "Connecting to Gemini..."));
+        speak(t("جاري المعالجة.", "Processing now."));
+        final String url = prefs.getString("ai_server_url", "");
+        final String token = prefs.getString("ai_app_token", "");
         aiExecutor.execute(() -> {
             try {
-                String answer = AiClient.ask(serverUrl, appToken, task, input, instruction, lang);
-                log("ai_" + task, input + "\n→ " + answer);
+                String answer = AiClient.ask(url, token, task, input, instruction, lang);
+                log(task, input + "\n→ " + answer);
                 runOnUiThread(() -> showResult(title, answer, true));
             } catch (Exception e) {
-                final String msg = t("تعذر الاتصال. ", "Could not connect. ") +
-                        safeError(e.getMessage()) + "\n\n" +
-                        t("تحقق من الرابط، الإنترنت، والرمز.",
-                          "Check the URL, internet, and token.");
+                final String msg = errorMessage(e);
                 log("ai_error", msg);
-                runOnUiThread(() -> showResult(
-                        t("خطأ الاتصال", "Connection error"), msg, false));
+                runOnUiThread(() -> {
+                    resetScreen(t("تعذر إكمال العملية", "Could not complete the operation"), msg);
+                    addBackButton();
+                });
             }
         });
     }
 
+    private String errorMessage(Exception e) {
+        return t("تعذر الاتصال بـ Gemini. تحقق من الإنترنت أو إعدادات مزود الذكاء الاصطناعي.",
+                 "Could not connect to Gemini. Check your internet or Gemini settings.")
+                + "\n\n" + safeError(e.getMessage());
+    }
+
     private String safeError(String s) {
-        if (s == null || s.trim().isEmpty()) return t("خطأ غير معروف", "Unknown error");
+        if (s == null) return "";
         return s.length() > 280 ? s.substring(0, 280) + "..." : s;
     }
 
-    // ===================================================================
-    // Result screen
-    // ===================================================================
+    // ============================================================
+    // Result screen (structured)
+    // ============================================================
 
     private void showResult(String title, String result, boolean saveable) {
-        resetScreen(title, result);
+        resetScreen(title, null);
+        speak(t("اكتمل التحليل.", "Analysis complete."));
+
+        addPlainText(result);
+
         if (saveable && autoSaveResults) {
             db.insertDocument(title, "ai_result", result, summarize(result));
-            log("doc_autosaved", title);
         }
-        addButton(t("🔁 إعادة قراءة", "🔁 Read again"), null, v -> speak(result));
+
+        addPrimaryButton(t("قراءة صوتية", "Read aloud"), v -> speak(result));
+        addOutlineButton(t("نسخ النتيجة", "Copy result"), v -> {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("basir", result));
+                speak(t("تم النسخ.", "Copied."));
+            }
+        });
         if (saveable) {
-            addButton(t("💾 حفظ في الأرشيف", "💾 Save to archive"), null, v -> {
+            addOutlineButton(t("حفظ في المحفوظات", "Save to archive"), v -> {
                 db.insertDocument(title, "ai_result", result, summarize(result));
-                log("doc_saved", title);
                 speak(t("تم الحفظ.", "Saved."));
             });
         }
-        addButton(t("📤 مشاركة النتيجة", "📤 Share result"), null, v -> {
+        addOutlineButton(t("مشاركة", "Share"), v -> {
             Intent i = new Intent(Intent.ACTION_SEND);
             i.setType("text/plain");
             i.putExtra(Intent.EXTRA_TEXT, result);
-            startActivity(Intent.createChooser(i,
-                    t("مشاركة", "Share")));
+            startActivity(Intent.createChooser(i, t("مشاركة", "Share")));
         });
         addBackButton();
     }
@@ -1108,22 +1345,19 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         return x.length() <= 200 ? x : x.substring(0, 200) + "...";
     }
 
-    // ===================================================================
+    // ============================================================
     // Voice command
-    // ===================================================================
+    // ============================================================
 
     private void startVoiceCommand() {
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, isEnglish() ? "en-US" : "ar-SA");
         i.putExtra(RecognizerIntent.EXTRA_PROMPT,
-                t("قل أمرًا: اقرأ، طوارئ، إعدادات.",
-                  "Say a command: read, emergency, settings."));
+                t("قل أمرًا أو اطرح سؤالًا.", "Say a command or ask a question."));
         try { startActivityForResult(i, REQ_VOICE); }
         catch (Exception e) {
-            speak(t("التعرف الصوتي غير متاح.",
-                    "Speech recognition unavailable."));
+            speak(t("التعرف الصوتي غير متاح.", "Speech recognition unavailable."));
         }
     }
 
@@ -1136,6 +1370,9 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         } else if (requestCode == REQ_IMAGE_PICK && resultCode == RESULT_OK
                 && data != null && data.getData() != null) {
             handlePickedImage(data.getData());
+        } else if (requestCode == REQ_DOC_PICK && resultCode == RESULT_OK
+                && data != null && data.getData() != null) {
+            handleConvertFile(data.getData());
         }
     }
 
@@ -1143,20 +1380,20 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         if (cmd == null) return;
         log("voice", cmd);
         String c = cmd.toLowerCase(Locale.ROOT);
-        if (contains(c, "اقر", "نص", "read", "text", "document")) showTextReaderScreen();
-        else if (contains(c, "طوارئ", "مساعدة", "emergency", "help")) showEmergencyScreen();
-        else if (contains(c, "سجل", "نشاط", "history", "activity")) showHistoryScreen();
-        else if (contains(c, "إعداد", "اعداد", "setting", "settings")) showSettingsScreen();
-        else if (contains(c, "مختبر", "ذكاء", "lab")) showAiLabScreen();
-        else if (contains(c, "أرشيف", "ارشيف", "archive")) showArchiveScreen();
-        else if (contains(c, "ذاكرة", "memory", "person", "people")) showMemoryScreen();
-        else if (contains(c, "ترجم", "translate")) showTranslateDialog();
-        else if (contains(c, "مشي", "تنقل", "walk")) showWalkingScreen();
-        else if (contains(c, "صور", "مشهد", "scene", "image", "photo")) showSceneScreen();
-        else if (contains(c, "حول", "about", "contact")) showAboutScreen();
-        else if (contains(c, "اسأل", "سؤال", "ask")) showAskDialog();
+        if (contains(c, "اسأل", "ask", "سؤال", "question")) showAskScreen();
+        else if (contains(c, "وصف", "describe", "صورة", "image", "مشهد", "scene")) showDescribeScreen();
+        else if (contains(c, "قراءة", "read", "مستند", "document", "pdf")) showDocumentScreen();
+        else if (contains(c, "ترجم", "translate")) showTranslateScreen();
+        else if (contains(c, "طوارئ", "emergency", "مساعدة", "help")) showEmergencyScreen();
+        else if (contains(c, "إعداد", "setting")) showSettingsScreen();
+        else if (contains(c, "محفوظات", "memory", "saved")) showMemoryScreen();
+        else if (contains(c, "حول", "about")) showAboutScreen();
         else {
-            speak(t("لم أتعرف على الأمر: ", "Did not recognize: ") + cmd);
+            // Treat as a direct question to Gemini
+            if (AiClient.isConfigured(prefs)) {
+                callAi("ask", cmd, t("إجابة بصير", "Basir answer"),
+                        "Answer as Basir.");
+            } else speak(t("Gemini يحتاج إعداد.", "Gemini needs setup."));
         }
     }
 
@@ -1165,40 +1402,24 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         return false;
     }
 
-    // ===================================================================
-    // Speech & vibration
-    // ===================================================================
+    // ============================================================
+    // Speech / vibration / log helpers
+    // ============================================================
 
     private void speak(String s) {
         if (!speechEnabled || tts == null || !ttsReady || s == null || s.trim().isEmpty()) return;
-        tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "basir_utterance");
+        tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "basir");
     }
 
     private void vibrate(int ms) {
         Vibrator v = (Vibrator) getSystemService(VIBRATOR_SERVICE);
         if (v == null) return;
-        if (Build.VERSION.SDK_INT >= 26) {
+        if (Build.VERSION.SDK_INT >= 26)
             v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
-        } else {
-            v.vibrate(ms);
-        }
-    }
-
-    private void vibratePattern(long[] pattern) {
-        Vibrator v = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-        if (v == null) return;
-        if (Build.VERSION.SDK_INT >= 26) {
-            v.vibrate(VibrationEffect.createWaveform(pattern, -1));
-        } else {
-            v.vibrate(pattern, -1);
-        }
+        else v.vibrate(ms);
     }
 
     private void log(String type, String content) {
         if (db != null) db.insertLog(type, content);
-    }
-
-    private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
     }
 }
