@@ -1,1 +1,2 @@
-# MVP: no custom ProGuard rules yet.
+# Add project specific ProGuard rules here.
+-keep class com.basir.ai.** { *; }

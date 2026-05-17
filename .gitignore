@@ -1,12 +1,11 @@
 # Gradle
 .gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
+local.properties
 
 # Android Studio / IntelliJ
 .idea/
 *.iml
-local.properties
 captures/
 .externalNativeBuild/
 .cxx/
@@ -25,30 +24,14 @@ captures/
 .DS_Store
 Thumbs.db
 
-# Node (server/)
+# Node.js (server)
 server/node_modules/
 server/.env
 server/npm-debug.log
+server/yarn-error.log
 
 # Emergent platform (internal)
 .emergent/
 memory/
 test_reports/
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
+test_result.md

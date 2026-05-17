@@ -1,70 +1,60 @@
-# Basir AI
+# Basir AI – بصير AI
 
-Basir AI is an accessibility-first Android project for blind and low-vision users. It uses a secure server proxy to call GPT-5.5 without storing the OpenAI API key inside the APK.
+> عينك الذكية في كل مكان · Your smart eye, everywhere
 
-## Current version
+Basir AI is a comprehensive Android assistant for blind and low-vision users.
+It combines AI-powered scene analysis, document reading, smart translation,
+walking guidance, personal memory, and emergency tools — all wired to a secure
+GPT proxy server (so no API key ever lives inside the APK).
 
-`0.4.0-final-review`
+## Features
 
-## Main features
+- 📷 **Scene description** – send any image to GPT for alt text, obstacles, risks
+- 📄 **Document reader** – invoices, contracts, medical notes with structured output
+- 💬 **Ask Basir** – open-ended questions to GPT, screen-reader friendly answers
+- 🧪 **AI Lab** – alt text, screenshot explanation, study cards, polite replies
+- 🌐 **Smart translation** – contextual AR/EN with tone notes
+- 🚶 **Walking assistant** – short voice + vibration alerts (does not replace a cane)
+- 🆘 **Emergency mode** – one-tap SMS with approximate location
+- 🧠 **Personal memory** – save people, products, places (local only, encrypted-safe)
+- 🗂 **Archive & activity log** – everything stored locally on the device
+- ⚙️ **Extensive settings** – language, TTS rate, font size, privacy, vibration, auto-save
+- 🎤 **Voice commands** – navigate the whole app hands-free in Arabic or English
 
-- Arabic and English interface switching.
-- Screen-reader-friendly main interface.
-- Text-to-Speech support.
-- Voice command entry point.
-- Secure GPT-5.5 proxy settings.
-- Ask Basir GPT-5.5.
-- Image analysis from gallery through the proxy.
-- Alt text generation for blind users.
-- Screenshot explanation.
-- Document and text analysis.
-- Study cards, legal-safe analysis, health-safe analysis, and reply drafting.
-- Local archive and personal memory.
-- Emergency contact and help message.
-- About and Contact screen with `ubdallahalrashdee@gmail.com`.
+## How it builds
 
-## Build APK on GitHub
+This repo includes a GitHub Actions workflow that builds a debug APK on every
+push to `main`. To download:
 
-1. Create a GitHub repository.
-2. Upload the contents of this project folder.
-3. Open the repository Actions tab.
-4. Run **Build Basir AI APK**.
-5. Download the artifact named `BasirAI-debug-apk`.
-6. The APK path inside the artifact is:
+1. Push to GitHub (use the **Save to Github** button on Emergent).
+2. Open the **Actions** tab → **Build Basir AI APK** workflow.
+3. Wait ~5 minutes for the build to finish.
+4. Open the run → **Artifacts** → download `BasirAI-debug-apk`.
+5. Install the APK on your Android phone.
 
-```text
-app-debug.apk
-```
+## How the AI works
 
-The workflow runs:
+The app talks to a small Node.js proxy that holds the OpenAI API key.
+See [`server/README_SERVER.md`](server/README_SERVER.md) for setup.
 
-```bash
-gradle assembleDebug --stacktrace
-```
+Once your proxy is online, open the app → **Settings → GPT Proxy setup**,
+paste the URL, save, then tap **Test AI connection**.
 
-## Server setup
+## Stack
 
-Deploy the `server` folder on a Node.js host such as Render, Railway, Fly.io, or your own VPS.
+| Layer    | Technology                                  |
+|----------|---------------------------------------------|
+| App      | Android Native (Java 17, framework only)    |
+| Build    | AGP 8.2.2 · Gradle 8.5 · compileSdk 34      |
+| CI       | GitHub Actions (Ubuntu, Temurin JDK 17)     |
+| Proxy    | Node.js 18+ · Express                       |
+| AI       | OpenAI Chat Completions (text + vision)     |
 
-Set environment variables:
+## Contact
 
-```text
-OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-5.5
-BASIR_APP_TOKEN=change-this-random-secret
-PORT=3000
-```
+- 📧 ubdallahalrashdee@gmail.com
+- 👤 عبدالله الراشدي · Abdullah Al-Rashidi
 
-Then set the Android app proxy URL to:
+## License
 
-```text
-https://your-server.com/api/basir
-```
-
-## Security note
-
-Do not put `OPENAI_API_KEY` inside Android source code, GitHub public files, or the APK. The key belongs on the server only.
-
-## Important safety note
-
-Basir AI is assistive. It does not replace a white cane, guide dog, trained human assistance, doctors, pharmacists, lawyers, emergency services, or personal judgment in unsafe situations.
+All rights reserved. Contact the developer for licensing inquiries.

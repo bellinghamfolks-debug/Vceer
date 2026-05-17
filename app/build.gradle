@@ -4,17 +4,20 @@ plugins {
 
 android {
     namespace 'com.basir.ai'
-    compileSdk 35
+    compileSdk 34
 
     defaultConfig {
         applicationId 'com.basir.ai'
         minSdk 23
-        targetSdk 35
-        versionCode 5
-        versionName '0.4.1-build-audited'
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
     }
 
     buildTypes {
+        debug {
+            debuggable true
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

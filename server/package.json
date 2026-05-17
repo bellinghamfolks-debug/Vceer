@@ -1,17 +1,18 @@
 {
-  "name": "basir-ai-gpt55-proxy",
-  "version": "0.4.1",
-  "type": "module",
-  "private": true,
+  "name": "basir-proxy",
+  "version": "1.0.0",
+  "description": "Secure OpenAI proxy server for Basir AI Android app",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node index.js"
   },
   "dependencies": {
-    "express": "^5.1.0",
-    "cors": "^2.8.5"
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   }
 }
