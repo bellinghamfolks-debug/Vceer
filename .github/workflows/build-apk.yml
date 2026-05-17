@@ -24,9 +24,6 @@ jobs:
           test -f settings.gradle
           test -f build.gradle
           test -f gradle.properties
-          test -f gradlew
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
           test -f app/build.gradle
           test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/java/com/basir/ai/MainActivity.java
@@ -35,7 +32,7 @@ jobs:
           test -f app/src/main/res/values/strings.xml
           test -f app/src/main/res/values/styles.xml
           test -f app/src/main/res/drawable/ic_basir.xml
-          echo "All required files present."
+          echo "Preflight OK"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -48,12 +45,18 @@ jobs:
         with:
           packages: 'platforms;android-34 build-tools;34.0.0 platform-tools'
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Set up Gradle 8.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
 
-      - name: Show tool versions
+      - name: Regenerate Gradle wrapper (in case wrapper jar is missing)
         run: |
-          java -version
+          # Some hosts strip binary jars from auto-commits.
+          # Regenerate a fresh wrapper for Gradle 8.5 so ./gradlew works.
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
+          chmod +x ./gradlew
+          ls -la gradle/wrapper/
           ./gradlew --version
 
       - name: Build debug APK
@@ -63,7 +66,7 @@ jobs:
         if: always()
         run: |
           echo "=== APK outputs ==="
-          find app/build/outputs -type f -name "*.apk" || true
+          find app/build/outputs -type f -name "*.apk" 2>/dev/null || echo "no apk yet"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
